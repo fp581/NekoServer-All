@@ -88,3 +88,5 @@ Cleanup: restore the post-install snapshot
 
 - Reading the first page's cards for plain words and the right sizes on the gate machine.
 - Opening the dashboard and the phone guide to see that nothing names an app left out.
+
+1.0.0 round: not tested (no stage).

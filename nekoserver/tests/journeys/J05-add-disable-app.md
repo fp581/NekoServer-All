@@ -47,3 +47,5 @@ After the app is put back:
 
 Editing the settings file is by hand on the VM (the rig has no rule for it yet); the
 two reruns are driven. 0.48.1 gate: not tested (unit tests only).
+
+1.0.0 round: not tested (unit tests only).

@@ -62,3 +62,5 @@ tests/test_backup_times.py:654). `nekoserver-host-backup.timer` still reads 00:0
 
 None: the rig's rules answer the times. 0.48.1 gate: partly proved (the rerun showed and
 kept the times; the partial-run keep is unit-tested only).
+
+1.0.0 round: not tested (unit tests only).

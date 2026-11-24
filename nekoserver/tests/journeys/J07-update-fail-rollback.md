@@ -33,6 +33,25 @@ The failed update:
 - The dashboard's updates card shows the failure and the app at its old version; a new
   major version is only shown until approved (README.md:222).
 
+The weekly update night, or **Update now** (since 1.0.0 the gate's own drill: one app pinned
+to its previous build, its **Update now** started, and the new image's container killed while
+it is checked):
+
+- The earlier image is back and the app's container runs on it; the app's page answers with
+  its settings as before.
+- The report says `fail` with `rolled_back` true and the reason in plain words:
+  `<app> <version>: <what failed>; undone, <app> runs its previous version and the update is
+  tried again next week`; the update stays pending.
+- The dashboard shows a warning, `Weekly app updates: the update was undone, your apps work`,
+  with `The update was undone: your apps are back on their previous version and work as
+  before. It is tried again next week. Why: ...`, never `Urgent`
+  (`a_rolled_back_weekly_update_says_the_apps_are_back_and_working`, runtime/src/collect.rs).
+  An app left broken after another app's update was undone that night makes the night a
+  failure (`an_app_left_broken_after_an_undone_one_makes_the_night_a_failure`,
+  runtime/src/maintenance.rs).
+- **Update now** again, with nothing killed, installs it; pending no longer lists it and the
+  alert is gone after the next collect.
+
 The stopped update:
 
 - The journal `/etc/nekoserver-backups/maintenance-resume.json` exists while the run is
@@ -55,3 +74,10 @@ suite's `monthly cut off while updating` scenario (rig `fault.sh`, `fault-any.sh
 in earlier rounds on the WSL distros, not yet a stage of the VM gate.
 
 0.48.1 gate: not tested (unit tests and earlier-round rig scripts).
+
+1.0.0 round (`tests/COVERAGE-MAP.md`): partly proved. The weekly drill above on the VM:
+37843d5 rolled back right, but the dashboard said `Urgent` (T1-R11); on 7efba8a the alert is
+the warning above and Update now then installed it. The monthly run's roll-back on a real
+install was not reached: on NekoArch v0.52.3 (T2-monthly) every run stopped, correctly, at the
+check before the update, for the rig's own settings. The stopped update was not driven. The
+roll-back drill on the final commit 597c800: pending.

@@ -22,7 +22,7 @@ First run:
   `test_ctrl_c_records_the_step_and_ends_without_a_traceback`, tests/test_installer_flow.py:99).
 - `install.sh` exits 1, the waiting code, never 5 (installer.py:40 `WAITING, STEP_FAILED`;
   `test_waiting_is_not_a_failure`, tests/test_setup_round.py:360).
-- The finishing screen says `NekoServer is almost ready` and `Done: 31 of 32 steps.`
+- The finishing screen says `NekoServer is almost ready` and `Done: 33 of 34 steps.` (J01's count less one)
   (`headline`, wizard.py:337: fewer than half done would say `Setup stopped: n things need you`,
   `test_fewer_than_half_done_is_not_almost_ready`, tests/test_setup_round.py:454), lists the
   phone step under `What needs you (fix these first; ...)` with its own line, and ends
@@ -40,7 +40,10 @@ Second run (`sudo bash install.sh`):
 - The remembered optional answers are listed, with the backup times the settings hold
   (`test_the_list_of_last_answers_shows_the_times_the_settings_hold`, tests/test_backup_times.py:539).
 - The phone step and the playback test are asked; after them the first checkup runs and
-  the screen says `NekoServer is ready!`, `Done: 32 of 32 steps.`; exit code 0.
+  the screen says `NekoServer is ready!`, `Done: 34 of 34 steps.`; exit code 0.
+- A step left for later says `This step is left for later. Run  sudo bash install.sh  again to
+  finish it; your answers are kept.` (`test_a_step_left_for_later_says_how_to_finish_it_in_plain_words`,
+  tests/test_installer_flow.py).
 - A switch left alone on the first page is saved as it stands when the button is pressed, so
   nothing is asked about it later (`test_the_button_saves_every_switch_so_nothing_is_asked_later`,
   tests/test_setup_round.py).
@@ -49,3 +52,7 @@ Second run (`sudo bash install.sh`):
 
 Pressing Skip for now and Ctrl+C at the right moments is manual, or done by the rig's
 `ask.sh` through the inbox. 0.48.1 gate: not tested (unit tests only).
+
+1.0.0 round: partly proved. Setup run again after a stop finished what was left, on FedoraLinux-44
+35ea7bc and NekoAlma2 369390b (after the WSL rig fix) and on the VM 37843d5 (after the restart a
+Debian update needed). Skip for now and Ctrl+C at chosen moments were not driven.

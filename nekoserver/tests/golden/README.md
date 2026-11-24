@@ -10,7 +10,7 @@ cleanup that changes nothing on purpose can be shown to change nothing.
 ## Regenerating them on purpose
 
 When a change to a unit or a settings file is meant (a new line, a renamed option), or
-after a version bump (the paths name the release, `v0.48.1` today, so a bump changes
+after a version bump (the paths name the release, `v1.0.0` today, so a bump changes
 every unit that runs the runtime), write the expected files again and commit them:
 
 ```bash

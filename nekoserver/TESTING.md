@@ -1,31 +1,62 @@
 # How NekoServer is tested
 
-This is the standard every release follows, from 0.48.2 on. It names the fixed user
-journeys, the safety rules, the controlled failures, the fixtures, the record format and
-the release gate report. The filled-in journey records are in `tests/journeys/`, the
+This is the standard every release follows, from 0.48.2 on; this text is as of 1.0.0. It
+names the fixed user journeys, the safety rules, the controlled failures, the fixtures, the
+record format and the release gate report. The filled-in journey records are in `tests/journeys/`, the
 coverage map for the last release in `tests/COVERAGE-MAP.md`. Code references are given
 as `file:line` as of the commit this file ships with; test names are stable, line numbers
 drift.
 
 ## The tiers
 
-**CI tier (under 5 minutes, every push).** `.github/workflows/ci.yml` runs the Python
-suite (`python -m unittest discover -s tests`), `cargo test --locked` in `runtime/`, ruff,
-rustfmt, clippy, Prettier, shfmt, and `docker compose config` on every file in `compose/`.
-Everything here simulates the hardware. It holds the unit suites, the golden-file tests
-(the setup window and dashboard page harnesses `tests/setup_window_harness.mjs` and
-`tests/dashboard_harness.mjs`, the fixtures under `tests/fixtures/`) and the safety-rule
-tests listed below. Nothing in this tier may need root, a drive, a VM or the network.
+**CI tier (on a pull request, and by hand).** `.github/workflows/ci.yml` runs when a pull
+request is opened, reopened or marked **Ready for review**, and by hand (`workflow_dispatch`)
+for any other commit. It is not started by a plain push, so a commit pushed to an open draft
+is checked by starting the workflow by hand. It runs the Python suite
+(`python -m unittest discover -s tests`), the restore tool's tests on Python 3.8, the browser
+tests (Chromium, `.github/browser-tests/run.sh`), `cargo test --locked`, rustfmt and clippy
+in `runtime/`, the runtime builds, ruff, Prettier, shfmt, and `docker compose config` on every
+file in `compose/`. `.github/workflows/real-apps.yml` (**Real apps**) starts the same way and
+runs Jellyfin with real app containers. Before a commit is handed in, CI's steps are run
+locally with CI's own versions (ruff 0.16.8, the pinned Rust). Everything here simulates the
+hardware. It holds the unit suites, the golden-file tests (the setup window and dashboard
+page harnesses `tests/setup_window_harness.mjs` and `tests/dashboard_harness.mjs`, the
+fixtures under `tests/fixtures/`) and the safety-rule tests listed below. Nothing in this tier
+may need root, a drive, a VM or the network.
 
-**Release gate (the rig, about 3 hours, once per release candidate).** It runs outside the
-repository, on the NekoDebian VirtualBox VM and the five WSL distros (one per Linux
-family). Stages, in order: a fresh install from the clean snapshot `clean-debian13-desktop`
-(J01), a post-install snapshot, the drills (backups once in first_checkup's order, timers
-fired by drop-in, a weekly copy on a full USB drive, retention, restores), the phone checks
-over Tailscale, and the distro-specific subset on the WSL distros. A failed stage is fixed,
-covered by a unit test, and rerun from the post-install snapshot; the whole gate runs
-again only on the final commit. The rig scripts live in their own private repository;
-their names are given here so the coverage map can point at them.
+**Release gate (the rig, once per release candidate).** It runs outside the repository, on
+the rig:
+
+- The **NekoDebian VM** (Hyper-V; Debian 13 with a desktop; virtual SSD, HDD and USB disks).
+  It is started from checkpoints: `clean-debian13-desktop` for a fresh install, the previous
+  release installed with test data for the upgrade, and an `installed-<commit>` checkpoint of
+  each installed state, so a drill starts from where the last one left off rather than from a
+  new install. It is the only machine with drives to replace and a restart, and the only one
+  for the Debian and Ubuntu family.
+- **One WSL distro per Linux family**: Arch, Fedora, the RHEL family (AlmaLinux) and openSUSE.
+  Each runs a fresh install with the recommended answers, the nightly app backup started by
+  its own unit, and a restore of app settings. WSL cannot prove anything about drives (no
+  drive of its own to pull or replace), restarts, or Tailscale sign-in. Its known artifacts are
+  set right on the rig before a run and are not NekoServer bugs: `/` is a private mount, so
+  run `mount --make-rshared /`, and Docker's iptables chains are shared between distros, so
+  restart Docker. A test that does not depend on the distro runs on one distro only.
+
+The stages, in order:
+
+1. The upgrade from the previous release's installed checkpoint (J08).
+2. A fresh install from the clean checkpoint (J01), and a checkpoint of it.
+3. The recovery drills on installed checkpoints (J09): both data drives lost, the SSD lost,
+   the HDD lost, and the restored data opened in the apps.
+4. The on-purpose interruptions (S04, F03): a backup, a restore and an upgrade cut off part
+   way.
+5. A failed update rolled back (J07), the release channels (J08), and the uninstaller with a
+   drive missing.
+6. A restart (every installed layout).
+7. The distro subset on the WSL distros.
+
+A failed stage is fixed, covered by a unit test, and rerun from its checkpoint; the whole gate
+runs again on the final commit. The rig scripts live outside this repository; the coverage
+map names the findings row of each run instead.
 
 **Lab (before a release, when the code it covers changed).** `lab/nas_lab.py`: the iSCSI
 interruption tests, which need a kernel with iSCSI and a VM; run by hand as root.
@@ -40,7 +71,9 @@ every expected result below is seen, not when a command exits 0.
 snapshot, three blank drives), the README steps, `sudo bash install.sh`, the first page as
 it comes, **Install selected apps** (in the terminal: `yes`), Enter at every question after
 it, the phone confirmed. Expected: the finishing screen says `NekoServer is ready!`
-and `Done: 32 of 32 steps.` (the count is the installer's plan, `wizard.finishing_screen`),
+and `Done: 34 of 34 steps.` (the count is the installer's plan, `wizard.finishing_screen`:
+34 on the VM with the SSD, the HDD and the USB drive in 1.0.0, and 33 of 34 while the phone
+step waits),
 then `Everything is set up. Backups and monthly updates run on their own;`, the line
 `Dashboard:          http://127.0.0.1:8787  (on this PC)` and `Dashboard PIN:      set`.
 The timers hold the template's times (`config.json` `backup_times`: 04:15, Sun 03:00,
@@ -68,9 +101,11 @@ settings file, `systemctl list-timers`, `docker ps`, the checklist. Cleanup: sna
 **J03 Skip a step, close setup, then resume.** Skip for now (or Ctrl+D) at the phone step,
 Ctrl+C at a later waiting step. Expected: `install.sh` exits 1 (waiting, not 5 = a failed
 step, `installer.py` `WAITING, STEP_FAILED`); the finishing screen says `NekoServer is
-almost ready`, `Done: 31 of 32 steps.` and lists the phone step under `What needs you`;
-the setup window shows the same title and count. `sudo bash install.sh` again asks no
-confirmed question again and ends `NekoServer is ready!`, `Done: 32 of 32 steps.`
+almost ready`, `Done: 33 of 34 steps.` (J01's count less one) and lists the phone step under
+`What needs you`; the setup window shows the same title and count. A step left for later says
+`This step is left for later. Run  sudo bash install.sh  again to finish it; your answers are
+kept.` `sudo bash install.sh` again asks no confirmed question again and ends `NekoServer is
+ready!`, `Done: 34 of 34 steps.`
 Evidence: both finishing screens, the state file, the window's `finished` event.
 
 **J04 Switch between browser and terminal answers.** One question answered in the window,
@@ -102,29 +137,69 @@ night) run with one app's new image made to fail its health check, and once more
 the service stopped in the middle. Expected: a snapshot with `manifest.json` under
 `backups/monthly/` exists before any image changes; the rollback puts back the images
 and config files that run saved; the app answers at its old version; the report says
-`fail` with a sanitized reason and that it tries again tomorrow night; after the stop,
+`fail` with a sanitized reason and that it tries again tomorrow night (the monthly run) or
+next week (a weekly update night, or **Update now**); after the stop,
 `nekoserver-maintenance-resume.service` reads `/etc/nekoserver-backups/maintenance-resume.json`
-and finishes or rolls back; the journal is gone when it ends. Evidence: the report, the
-journal before and after, `docker image ls`, the app's version page.
+and finishes or rolls back; the journal is gone when it ends. A weekly update that was
+undone is shown on the dashboard as a warning, `Weekly app updates: the update was undone,
+your apps work`, with the reason in one sentence, never as `Urgent`; an app left broken
+after another app's update was undone that night makes the night a failure. The update
+stays pending, and **Update now** with nothing made to fail installs it. The 1.0 round's
+drill: pin one app (Prowlarr) to its previous build, start its **Update now**, and kill the
+new image's container while it is checked. Evidence: the report, the journal before and
+after, `docker image ls`, the app's version page, the dashboard's alert.
 
-**J08 Upgrade NekoServer from an older installation.** A fresh 0.47.9 install, then the
-dashboard's upgrade to the release under test. Expected: the older release's kept copy stays
-in its own folder under `/srv/nekoserver/installer/releases/`; the upgrade runs the profile the server
-was set up with; every installed service runs the new release; the dashboard answers
-with the new version; the settings keep each job's own time (a server from before 0.48.0
-has no `backup_times`); `/etc/nekoserver-backups/upgrade.json` is removed at the end.
-With the check made to fail: the release you had is put back and checked. Evidence: the
-upgrade log in `installer/upgrades/`, `systemctl show` of the services, the dashboard.
+**J08 Upgrade NekoServer from an older installation.** The previous release installed with
+test data (the VM's checkpoint of it; 0.52.3 for 1.0.0), then the new release's
+`sudo bash install.sh` (or the dashboard's upgrade) to the release under test. Expected: the
+first page reads `Review this NekoServer update` and `From <old> to <new>`; the saved
+answers are kept; the older release's kept copy stays in its own folder under
+`/srv/nekoserver/installer/releases/`; the upgrade runs the profile the server was set up
+with; every installed service runs the new release; the dashboard answers with the new
+version and no alert; the settings keep each job's own time (a server from before 0.48.0
+has no `backup_times`); `/etc/nekoserver-backups/upgrade.json` is removed at the end. A
+server from before 1.0.0 moves from the `beta` channel to `stable` once, without a question,
+and setup says so: `Updates: this server is offered stable NekoServer releases only from now
+on (stable is the default since 1.0.0). To be offered betas again, set "nekoserver_channel":
+"beta" under "maintenance" in my-config.json and run setup again`; a server already on
+`stable` is left as it is. With the check made to fail: the release you had is put back and
+checked. An upgrade from a release older than the previous one (0.47.9, say) is still
+wanted, and was not run in the 1.0 round. Evidence: the upgrade log in
+`installer/upgrades/`, `systemctl show` of the services, `maintenance.nekoserver_channel`
+in `my-config.json`, the dashboard.
 
-**J09 Replace a drive and restore onto a separate system.** A fresh install on a clean VM
-with blank drives, the old USB drive's contents put on the new one, then the recovery
-menu (`sudo bash install.sh --recover`): photos, Nextcloud files, app settings, a
-monthly snapshot. Expected: every restored file matches the checksum recorded when it
-was put in (adddata.py's `r18-data.json`); restores go into a new folder only and are
-checked against `.neko-ledger.json`; a verified file that is missing stops the restore
-and is named; a replaced HDD is refused while the settings name the old UUID, and a
-replacement drive keeps nothing of the old one. Evidence: the checksum comparison, the
-menu's output, the refusal line.
+**J09 Replace a drive and restore onto a separate system.** Test data in the apps (a few
+photos and an album in Immich, a file in Nextcloud, a short film, a changed app setting),
+then the nightly backup, the monthly snapshot and the weekly USB copy. Three drills, each
+from that installed checkpoint:
+
+- **Both the SSD and the HDD lost** (a new system disk, new blank SSD and HDD, a copy of
+  the old USB drive): a fresh install, then RECOVERY.md "Both the SSD and the HDD are lost"
+  and the recovery menu (`sudo bash install.sh --recover`): the photos, the Immich
+  database copy, the password list, the app settings from the USB copy (the weekly USB
+  copy carries the newest app settings since 1.0.0, sealed for the backup key and opened
+  with the old server's backup password), the Nextcloud database by RECOVERY.md's steps,
+  and the Nextcloud files.
+- **The SSD lost**, with Nextcloud on: setup on the new SSD finds this server's own
+  Nextcloud backup on the HDD (the newest of the nightly backup, which saves Nextcloud
+  from the first night since 1.0.0, the weekly database copy and the monthly snapshot)
+  and asks whether to bring Nextcloud back from the backup of that date, yes or no. Yes brings back its
+  settings, program and database and leaves the files folder as it was; no keeps the
+  refusal and changes nothing.
+- **The HDD lost**, with the photos on it: setup on the new HDD, the photos restored from
+  the USB drive through the menu and copied with the menu's own command, then setup again,
+  which makes Immich's other folders so that Immich starts.
+
+Expected: every restored file matches its checksum (the menu says `checksums matched` or
+`checksums verified`); restores go into a new folder only and are checked against
+`.neko-ledger.json`; a verified file that is missing stops the restore and is named; a
+replaced drive is never used in the old one's place by itself: setup says the old drive is not
+connected and asks for the new one on its storage page, and a replacement drive
+keeps nothing of the old one. Then the restored data is opened in the apps: the photos and
+the album in Immich with the old login, the Nextcloud file read back and a new upload
+taken, the film in Jellyfin's library, the changed setting back; and the next backups run.
+Evidence: the checksum comparison, the menu's output, the apps' pages, the next backups'
+reports.
 
 **J10 Installation without the media apps, then with them.** Photos, Movies and shows
 and Music switched off on setup's first page on a blank PC, then on at a later run, then
@@ -380,8 +455,8 @@ never against anyone's only data.
 | --- | --- | --- | --- |
 | F01 | NAS disappears | Writes stop safely; recovery is possible | `runtime/src/nas_watch.rs` tests (`the_apps_stop_once_on_a_failing_drive_and_start_only_when_all_take_writes`, runtime/src/nas_watch.rs:435), the recovery menu's read-only check, `lab/nas_lab.py` (lab, not the gate) |
 | F02 | Backup disk fills | No false success; existing backups survive | rig `usb-full.sh` (VM); `a_full_drive_removes_the_oldest_snapshots_but_keeps_the_newest` (runtime/src/backup.rs:7092), `unfinished_runs_make_room_on_a_full_hdd_but_complete_ones_stay` (runtime/src/maintenance.rs:6653), `test_a_drive_that_fills_up_mid_restore_says_what_is_there` (tests/test_wizards.py:1827) |
-| F03 | Process stops mid-update | Resume or rollback uses its journal correctly | rig `cut.sh` (an upgrade cut off, then `nekoserver-upgrade-resume`) and the fault suite's cut-off monthly run; `test_a_cut_off_upgrade_is_put_right_at_the_next_start` (tests/test_upgrade.py:691); not yet a gate stage |
-| F04 | API returns 409/500 | UI explains the problem and permits recovery | `test_a_refused_start_gives_the_button_back_with_the_reason` (tests/test_setup_flow.py:174), `test_error_codes_are_explained_everywhere` (tests/test_dashboard.py:67), `test_a_body_too_large_or_broken_is_refused` (tests/test_setup_gui.py:620); a 500 from the runtime to the dashboard page: not yet covered |
+| F03 | Process stops mid-update | Resume or rollback uses its journal correctly | rig `cut.sh` (an upgrade cut off, then `nekoserver-upgrade-resume`) and the fault suite's cut-off monthly run; `test_a_cut_off_upgrade_is_put_right_at_the_next_start` (tests/test_upgrade.py:691); a gate stage since 1.0.0 (stage 4, the on-purpose interruptions, with a backup and a restore cut off too) |
+| F04 | API returns 409/500 | UI explains the problem and permits recovery | `test_a_refused_start_gives_the_button_back_with_the_reason` (tests/test_setup_flow.py:174), `test_error_codes_are_explained_everywhere` (tests/test_dashboard.py:67), `test_a_body_too_large_or_broken_is_refused` (tests/test_setup_gui.py:620), `an_oversized_body_sent_whole_still_gets_its_refusal` (runtime/src/serve.rs: a request over the limit gets its 400 E42, not a cut connection); a 500 from the runtime to the dashboard page: not yet covered |
 | F05 | Settings are malformed | Existing settings remain untouched | `test_a_settings_file_that_cannot_be_read_is_never_written_over` (tests/test_setup_gui.py:448), `test_a_setting_that_could_not_be_read_is_never_overwritten` (tests/test_gateway_cloud_origin.py:144), `test_changes_are_never_saved_into_the_template` (tests/test_setup_flow.py:42), `test_a_wrong_time_is_refused_in_plain_words` (tests/test_backup_times.py:118); no rig stage |
 | F06 | Health report is stale | Dashboard cannot present it as current proof | `only_a_complete_check_turns_stale` (runtime/src/collect.rs:3554), `stale_input_never_recovers_reported_problem` (runtime/src/notify.rs:844), `test_a_changed_schedule_makes_witnessed_results_outdated` (tests/test_backup_times.py:194), `test_a_new_usb_drive_archive_or_schedule_makes_it_outdated` (tests/test_acceptance_scope.py:40); the page shows `Overdue` (`dashboard/app.js:215`); no rig stage moves the clock past a report |
 | F07 | The assistant's model is missing | Ask Neko says it is not downloaded yet (run setup again, it needs the internet), or still downloading while a download runs, never "downloading" for ever after a cut-off one; everything else unchanged | `a_model_not_downloaded_says_so_and_never_downloading_for_ever` (runtime/src/assist.rs), `a_missing_model_says_it_is_not_there_yet` (runtime/src/assist.rs) |
@@ -398,6 +473,9 @@ Every release must show that it still reads its supported historical formats. Wh
 exists under `tests/` today:
 
 - `tests/fixtures/jellyfin_key_cases.json`: Jellyfin API key cases (used by `tests/test_review_fixes.py`).
+- `tests/fixtures/request_folder_cases.json`: the folders a request may land in (used by `tests/test_seerr_folders.py`).
+- `tests/fixtures/cardset/records/`: backup-card records, good and hostile, as the card tool reads them (used by `tests/test_neko_restore.py`).
+- `tests/golden/before-0.48.0/`: what setup writes for a settings file from before 0.48.0 (`tests/test_golden_units.py`; `tests/golden/README.md`).
 - `tests/old_release_guard_0479.py`: the old-release guard exactly as 0.47.9 shipped it, for the way-back test.
 - Older settings shapes are built inline in test code, not kept as files: settings from
   before 0.48.0 without `backup_times` (`tests/test_backup_times.py:95`, `:380`, `:458`),
@@ -441,8 +519,28 @@ The report for a release candidate names every journey, rule, failure and gate s
 one of four words: **passed**, **failed**, **skipped** (a stage chosen not to run, with
 the reason), **not tested** (no hardware, no script, or the integration was unavailable).
 A green CI run never stands in for a stage. Hardware that was not there is `not tested`,
-never `passed`. A stage rerun from the post-install snapshot says so. The changelog's
+never `passed`. A stage rerun from a checkpoint says so. The changelog's
 "How it was tested" section carries the summary and `tests/COVERAGE-MAP.md` the table.
+The coverage map sums each row up as **proved**, **partly proved** or **not tested**,
+and **pending** for a final-gate stage that has not reported yet. Each row names the commit
+it ran on and where it ran (the VM, or which WSL distro), and a run on an earlier commit of
+the release branch is written with that commit, never as a run of the final one. Unit test
+names are the evidence a reader can rerun; a VM or WSL run is named by its findings row.
+
+What a gate covers grows with the release. In 1.0.0 these are new, and each has its stage:
+
+- the nightly backup saves Nextcloud's database, settings and program from the first
+  night (J09, the SSD lost);
+- setup's offer to bring Nextcloud back after a new SSD (J09, the SSD lost);
+- the weekly USB copy carries the newest app settings (J09, both drives lost);
+- a weekly app update that was undone is shown as undone, not as urgent (J07);
+- the stable and beta channels, and the one-time move to stable (J08);
+- the backup password in force named when setup keeps the key after new drives (J09).
+
+Not provable on the rig, and always written as `not tested`: real hardware (a PC's own
+drives, fans and sensors, NVIDIA graphics), phone alerts end to end, a real router, real
+USB sticks and SD cards in a reader, NFS shares and a NAS when the rig has none, and anything about drives or
+restarts on the families that only run under WSL.
 A known bug's reproduction becomes a test that asserts the correct behavior; a test that
 passes because the bug still occurs is a bug of its own.
 
