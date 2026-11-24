@@ -106,6 +106,7 @@
       "compare": "Checking that every file of {kind} arrived whole",
       "switch": "Switching {kind} to the new drive",
       "start": "Starting the apps again",
+      "unswitch": "Putting {kind} back where they were",
       "check": "Checking that the apps work",
       "erase": "Erasing the drive",
       "partition": "Preparing the drive",
