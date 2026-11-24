@@ -1119,13 +1119,19 @@ def parents_like(target, here_root, to_root):
         missing.append(folder)
         folder = folder.parent
     for folder in reversed(missing):
-        folder.mkdir()
+        # 0755 from the start, whatever the unit's umask: a power cut before the chmod
+        # below leaves a folder the apps can still go through (T5 on 4c34bb6).
+        before = os.umask(0o022)
+        try:
+            folder.mkdir(mode=0o755)
+        finally:
+            os.umask(before)
         like = here_root / folder.relative_to(to_root)
         if like.is_dir():
             seen = like.stat()
             os.chmod(folder, stat.S_IMODE(seen.st_mode))
             if seen.st_uid != folder.stat().st_uid or seen.st_gid != folder.stat().st_gid:
-                os.chown(folder, seen.st_uid, seen.st_gid)
+                os.chown(folder, seen.st_uid, seen.st_gid, follow_symlinks=False)
         else:
             os.chmod(folder, 0o755)
 

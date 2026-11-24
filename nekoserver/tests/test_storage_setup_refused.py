@@ -482,6 +482,20 @@ class FolderModeTests(Jobs):
             self.assertEqual(folder.stat().st_mode & 0o777, 0o755)
         self.assertFalse((to / 'photos/archive/x').exists())
 
+    def test_a_parent_folder_is_0755_already_before_its_mode_is_set(self):
+        here, to = self.root / 'media', self.root / 'drives/d3'
+        to.mkdir(parents=True, exist_ok=True)
+        modes = []
+        before = os.umask(0o077)
+        try:
+            with mock.patch.object(
+                storage_jobs.os, 'chmod', lambda path, mode: modes.append(Path(path).stat().st_mode)
+            ):
+                storage_jobs.parents_like(to / 'photos/archive/x', here, to)
+        finally:
+            os.umask(before)
+        self.assertEqual([mode & 0o777 for mode in modes], [0o755, 0o755])
+
     def test_setup_run_again_by_a_job_runs_with_the_umask_setup_has_by_hand(self):
         import migrate
 
