@@ -50,13 +50,15 @@ class IncompleteMarkTests(unittest.TestCase):
             raise stop
 
     def test_a_restore_stopped_by_ctrl_c_keeps_its_mark(self):
+        stop = KeyboardInterrupt()
         with self.assertRaises(KeyboardInterrupt):
-            self.stopped_by(KeyboardInterrupt())
+            self.stopped_by(stop)
         self.assertEqual(self.marks(), ['nextcloud-neko-20261124-110719-INCOMPLETE.txt'])
 
     def test_a_restore_ended_by_an_error_keeps_its_mark_and_one_that_returns_early_does_not(self):
+        stop = OSError('No space left on device')
         with self.assertRaises(OSError):
-            self.stopped_by(OSError('No space left on device'))
+            self.stopped_by(stop)
         self.assertEqual(self.marks(), ['nextcloud-neko-20261124-110719-INCOMPLETE.txt'])
         other = self.home / 'photos-neko-20261124-120000'
 
