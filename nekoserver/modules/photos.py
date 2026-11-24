@@ -121,6 +121,14 @@ def immich_folders_back(upload, db, log):
     return made
 
 
+def waits_for_its_photos(upload, db):
+    """Immich cannot start until its photos are restored (T1-R10): its database has files,
+    so it checks its folders, and none of them is on this drive (a new or emptied HDD).
+    immich_folders_back makes the missing ones only once the restored ones are there."""
+    upload = Path(upload)
+    return has_files(db) and not any((upload / name).is_dir() for name in IMMICH_FOLDERS)
+
+
 def env_value(content, key):
     return next((line.split('=', 1)[1] for line in content.splitlines() if line.startswith(key + '=')), '')
 

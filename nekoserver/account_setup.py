@@ -802,4 +802,28 @@ def not_verified(config, app, entry, exc, output, pending):
     # as AttributeError: said in words.)
     reason = ODD_ANSWER if isinstance(exc, AttributeError) else str(exc) or type(exc).__name__
     advice = what_to_do(config, app, entry, answered=not isinstance(exc, (NotAnswering, NotRunning)))
+    if app == 'immich' and isinstance(exc, (NotAnswering, NotRunning)) and immich_waits_for_its_photos(config):
+        reason, advice = PHOTOS_FIRST
     output(f'{store.APPS[app][0]}: not verified ({reason}); the saved login is kept. {advice}')
+
+
+# T1-R10: after a new HDD, Immich restarts over and over until its photos are back, so
+# waiting for it never helps.
+PHOTOS_FIRST = (
+    'Immich cannot start yet: its photos are not on this drive (a new or emptied HDD), and it restarts '
+    'over and over until they are back',
+    'Restore the photos first: sudo bash install.sh --recover, "Restore something from a backup", '
+    '"Photos and videos (Immich)", and copy them back as it says. Immich starts once you run  '
+    'sudo bash install.sh  again after that.',
+)
+
+
+def immich_waits_for_its_photos(config):
+    """Immich's database knows photos, and none of its folders is on the photo drive."""
+    from modules import photos
+
+    try:
+        db = Path(config['data_mount']) / 'appdata' / 'immich' / 'postgres'
+        return photos.waits_for_its_photos(photo_library(config), db)
+    except (KeyError, OSError, RuntimeError, ValueError):
+        return False
