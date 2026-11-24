@@ -1773,7 +1773,12 @@ def finish_cut_move(job, saved):
     finish_move(job, kind, here, stopped)
 
 
-def finish(config, settings_files, state=None, folder=None, out=print):
+# How often the finish after Docker tries for the operation lock, 10 s apart (a job a
+# timer started as the PC came up may hold it for a few minutes).
+FINISH_LOCK_TRIES = 60
+
+
+def finish(config, settings_files, state=None, folder=None, out=print, sleep=time.sleep):
     """After Docker, at the start: a cut-off move or added drive finished (setup run again,
     then the old folders retired and the apps started), under the operation lock as the
     job itself was, so the control service's app buttons wait for it too (control.rs)."""
@@ -1783,12 +1788,14 @@ def finish(config, settings_files, state=None, folder=None, out=print):
     if not saved or not saved.get('committed'):
         return 0
     job = Job(saved['request'], config, settings_files, state, folder, out)
-    held = hold_operation(OPERATION_LOCK)
-    if held is None:
-        job.result('failed', FACTS.get('busy', 'Another job is at work.'), 'It is tried again at the next start.')
-        return 1
-    with held:
-        return finish_held(job, saved)
+    for _ in range(FINISH_LOCK_TRIES):
+        held = hold_operation(OPERATION_LOCK)
+        if held is not None:
+            with held:
+                return finish_held(job, saved)
+        sleep(10)
+    job.result('failed', FACTS.get('busy', 'Another job is at work.'), 'It is tried again at the next start.')
+    return 1
 
 
 def finish_held(job, saved):

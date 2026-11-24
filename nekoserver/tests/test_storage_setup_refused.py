@@ -200,7 +200,12 @@ class UnswitchTests(Jobs):
         job.journal('start', True, staging='x', here='ssd', to='media', change=[['locations', 'photos', 'media']])
         with open(self.root / 'operation.lock', 'a') as held:
             fcntl.flock(held, fcntl.LOCK_EX)
-            self.assertEqual(storage_jobs.finish(self.config, self.settings, self.root / 'state', self.root / 'run'), 1)
+            waited = []
+            finished = storage_jobs.finish(
+                self.config, self.settings, self.root / 'state', self.root / 'run', sleep=waited.append
+            )
+            self.assertEqual(finished, 1)
+        self.assertEqual(sum(waited), 10 * storage_jobs.FINISH_LOCK_TRIES)
         self.assertEqual(self.setups, [])
         self.assertIsNotNone(saved_journal(self.root))
         self.assertIn('next start', last_result(self.root)['advice'])
