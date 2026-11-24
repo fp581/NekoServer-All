@@ -74,7 +74,7 @@ it, the phone confirmed. Expected: the finishing screen says `NekoServer is read
 and `Done: 34 of 34 steps.` (the count is the installer's plan, `wizard.finishing_screen`:
 34 on the VM with the SSD, the HDD and the USB drive in 1.0.0, and 33 of 34 while the phone
 step waits),
-then `Everything is set up. Backups, weekly app updates and the monthly backup check run on their own;`, the line
+then `Installation complete. Scheduled backups and updates are enabled: the nightly backups, the weekly`, the line
 `Dashboard:          http://127.0.0.1:8787  (on this PC)` and `Dashboard PIN:      set`.
 The timers hold the template's times (`config.json` `backup_times`: 04:15, Sun 03:00,
 02:30, placed by `neko_common.job_times`): `nekoserver-music-backup.timer` 03:45 (only

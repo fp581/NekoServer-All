@@ -1172,6 +1172,35 @@ class SetupWindowTests(unittest.TestCase):
         self.assertEqual(self.page([done])['title'], 'NekoServer is almost ready')
         self.assertEqual(self.page([{**done, 'complete': True}])['title'], 'NekoServer is ready')
 
+    def test_the_finishing_pages_heading_stays_on_every_render(self):
+        # The window renders each state it fetches: the page's heading (what was checked)
+        # stayed only until the next fetch put the terminal's title back.
+        import finish_page
+        import wizard
+
+        nothing = {'state': 'not_tested', 'reason': 'nobody_tried_yet'}
+        summary = {
+            'outcome': 'pending',
+            'apps': [],
+            'tests': [],
+            'attention': [],
+            'pending': [{'id': 'step:gateway_tailnet', 'state': 'waiting', 'reason': 'step_waits_for_you'}],
+            'server': {'backup': nothing, 'restore': nothing},
+            'backups': [],
+        }
+        with mock.patch.object(wizard, 'dashboard_port', return_value=8787):
+            page = finish_page.page({'dashboard': {'port': 8787}, 'data_mount': '/srv'}, summary, pin_set=True)
+        done = {
+            **self.choose(),
+            'phase': 'finished',
+            'steps': [{'id': 'a', 'title': 'A', 'status': 'success'}],
+            'finish': ['  NekoServer is almost ready'],
+            'complete': False,
+            'title': 'NekoServer is almost ready',
+            'finish_page': page,
+        }
+        self.assertEqual(self.page([done, done])['title'], 'Setup is incomplete. Review the remaining steps below.')
+
 
 class SavedSettingsTests(unittest.TestCase):
     """After Linux is reinstalled, setup made new settings before it could see the SSD

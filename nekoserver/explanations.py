@@ -78,7 +78,7 @@ PACKAGES = {
 # was saved; `new_default` what a new server is offered (an extra is an opt-in there).
 PAGE_TITLE = 'What would you like this server to do?'
 PAGE_HINT = (
-    'Backups, the dashboard and private access from your own devices are always set up. '
+    'Backups, the dashboard and access through your private Tailscale network are always set up. '
     'Switching something off later stops it and keeps its data.'
 )
 PARTS = (
@@ -131,7 +131,7 @@ EXTRAS = (
         'on_default': True,
         'step': 'media',
         'title': 'Movies and shows - Jellyfin',
-        'explanation': 'Watch your films and shows on any device, and ask for new ones to be found and added.',
+        'explanation': 'Watch your movies and shows.',
         'small': 'Jellyfin. With finding and downloading: Seerr, Sonarr, Radarr, Prowlarr and qBittorrent.',
         'installs': (),
     },
@@ -144,7 +144,7 @@ EXTRAS = (
         'on_default': True,
         'step': 'music',
         'title': 'Music - Navidrome',
-        'explanation': 'Play your music collection from your phone or browser, and have new music found and added.',
+        'explanation': 'Stream your music collection.',
         'small': 'Navidrome. With finding and downloading: Lidarr, Prowlarr and qBittorrent.',
         'installs': (),
     },
@@ -330,14 +330,14 @@ ALWAYS = (
     # The accounts page, before the review, has made or been given the PIN already.
     'The dashboard, with the PIN from the accounts page',
     'Backups of your apps and settings, weekly app updates and a monthly backup check',
-    'Tailscale: private access from your own devices, not from the internet',
+    'Tailscale: access your server over the internet through your private Tailscale network. The server is not opened to the public internet',
     'Shared folders on your home network',
 )
 # Until each of these has its own page before the review, setup asks about it when it
 # gets there (the pages of 0.50.0 are built one by one; this list shrinks with them).
 # The drives are not among them any more: the storage page comes before the review.
 ASKED_DURING = {
-    'notifications': 'the address of your alerts topic',
+    'notifications': 'your ntfy notification address: the address your phone subscribes to for server alerts',
     'heartbeat': 'the check-in address of your outage service',
     'assistant': 'which AI model to use',
     'phone': 'signing in to Tailscale, and setting up your phone',

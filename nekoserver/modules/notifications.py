@@ -257,7 +257,11 @@ def alerts_form(context, ask=None):
     for line in lines:
         print(line)
     rows = [
-        {'key': 'address', 'label': 'The address of your alerts topic', 'secret': True},
+        {
+            'key': 'address',
+            'label': 'Your ntfy notification address: the address your phone subscribes to for server alerts',
+            'secret': True,
+        },
         {'key': 'token', 'label': 'Access token (only if your ntfy server gave you one)', 'secret': True},
     ]
     with setup_progress.page(
@@ -266,7 +270,9 @@ def alerts_form(context, ask=None):
         for _ in range(3):
             try:
                 address = setup_progress.page_field(
-                    'address', ask, 'The address of your alerts topic (hidden; Enter alone sets alerts up later): '
+                    'address',
+                    ask,
+                    'Your ntfy notification address: the address your phone subscribes to for server alerts (hidden; Enter alone sets alerts up later): ',
                 )
                 address = address.strip().rstrip('/')
                 if not address:

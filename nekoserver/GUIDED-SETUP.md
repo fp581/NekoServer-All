@@ -108,7 +108,7 @@ Answer `no` to see the step again and reopen the page. If no page opened, the st
 
 ### 5. Drive space
 
-Setup checks that the drives have room. If a drive has less than the recommended space, it says so and asks `One of your drives is small. Go on anyway?`. Answer `yes` to go on; the drive will just fill up sooner.
+Setup checks that the drives have room. If a drive has less than the recommended space, it names the drive, its free space, the minimum and the recommended amount, and asks `Continue with this drive?`. Answer `yes` to go on; the drive will just fill up sooner.
 
 If a drive is too small (less than 20 GB free on the SSD, or 50 GB on the HDD), setup stops. Free up space on that drive and run `sudo bash install.sh` again. To use a different drive instead: open `my-config.json` (in the same folder as `install.sh`), find the `"storage"` part, and delete the line `"uuid": "…",` under `"data_ssd"` (the SSD) or `"media_hdd"` (the HDD). Save the file and run `sudo bash install.sh` again: it asks for that drive anew.
 

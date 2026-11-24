@@ -63,7 +63,7 @@ class PageTests(unittest.TestCase):
             self.page = finish_page.page(CONFIG, SUMMARY, pin_set=True)
 
     def test_the_heading_says_the_real_outcome(self):
-        self.assertEqual(self.page['heading'], 'Your apps are installed. Some setup is still waiting for you.')
+        self.assertEqual(self.page['heading'], 'Setup is incomplete. Review the remaining steps below.')
         ready = {**SUMMARY, 'outcome': 'ready', 'pending': []}
         with mock.patch.object(wizard, 'dashboard_port', return_value=8787):
             self.assertEqual(finish_page.page(CONFIG, ready)['heading'], 'NekoServer is ready.')

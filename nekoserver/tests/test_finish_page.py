@@ -56,7 +56,7 @@ SUMMARY = {
 class FinishPageTests(unittest.TestCase):
     def test_each_apps_states_are_said_apart(self):
         lines = wizard.states_lines(SUMMARY)
-        self.assertIn('How things stand: Your apps are installed. Some setup is still waiting for you.', lines)
+        self.assertIn('How things stand: Setup is incomplete. Review the remaining steps below.', lines)
         self.assertIn(
             '  Jellyfin. Installed: done. Login verified: done. Opens: done. Tried by you: not tried yet (your library is '
             'empty: add a video or a song you own, or leave this test for later).',
@@ -94,7 +94,12 @@ class FinishPageTests(unittest.TestCase):
         for word in ('all done', 'everything works', 'all passed', 'fully'):
             self.assertNotIn(word, said)
         self.assertEqual(
-            (wizard.OUTCOMES['ready'], wizard.OUTCOMES['attention']), ('NekoServer is ready.', 'Setup needs attention.')
+            (wizard.OUTCOMES['ready'], wizard.OUTCOMES['ready_unscheduled'], wizard.OUTCOMES['attention']),
+            (
+                'Installation complete. Scheduled backups and updates are enabled.',
+                'NekoServer is ready.',
+                'Setup needs attention.',
+            ),
         )
 
     def test_every_reason_and_state_the_judge_can_give_has_its_words(self):

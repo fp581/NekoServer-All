@@ -59,21 +59,27 @@
           <div class="intro">
             <h1>What would you like this server to do?</h1>
             <p>
-              Backups, the dashboard and private access from your own devices are always set up. Switching something off
-              later stops it and keeps its data.
+              Backups, the dashboard and access through your private Tailscale network are always set up. Switching
+              something off later stops it and keeps its data.
             </p>
           </div>
           <div class="extras" id="extras"></div>
           <p class="muted note"><output id="choose-note"></output></p>
           <div class="actions">
             <button class="primary" id="continue" type="button">Continue</button>
-            <span class="muted" id="choose-hint">Prerequisite packages are installed. Your selected apps will be set up after you approve. The next page shows what will be set up.</span>
+            <span class="muted" id="choose-hint"
+              >Prerequisite packages are installed. Your selected apps will be set up after you approve. The next page
+              shows what will be set up.</span
+            >
           </div>
         </div>
         <div class="choose-page" id="review" hidden>
           <div class="intro">
             <h1 id="review-title">Ready to install NekoServer</h1>
-            <p id="review-intro">Prerequisite packages are installed. Your selected apps will be set up after you approve. Read what setup will do, then press the button.</p>
+            <p id="review-intro">
+              Prerequisite packages are installed. Your selected apps will be set up after you approve. Read what setup
+              will do, then press the button.
+            </p>
           </div>
           <div class="review" id="review-sections"></div>
           <p class="muted note"><output id="review-note"></output></p>
