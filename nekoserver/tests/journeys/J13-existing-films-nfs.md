@@ -73,3 +73,5 @@ Cleanup: restore the snapshot; stop the NFS server
 
 - Looking at Jellyfin's library for the films on the gate machine.
 - Comparing the share's file list before and after.
+
+1.0.0 round: not tested (no NAS on the rig).

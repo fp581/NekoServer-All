@@ -90,3 +90,5 @@ Cleanup: restore the post-install snapshot; stop the NFS server
 
 - On a real NAS box: finding the squash setting under the name its page gives it.
 - Timing a film's start from the folder against a drive on this PC, for the "slower" note.
+
+1.0.0 round: not tested (no NAS on the rig).

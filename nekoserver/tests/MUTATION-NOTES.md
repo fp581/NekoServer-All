@@ -222,6 +222,28 @@ Full check on a fresh copy of the working tree (version 0.39.2):
 | `cargo clippy --all-targets -- -D warnings` | clean |
 | `cargo test --release` | 244 passed, 0 failed |
 
-## 1.0 round: recovery_wizard expected survivors (2026-11-23)
+## 1.0 round (2026-11-23 and 24): the restore and recovery paths
 
-mutmut 2.5 on recovery_wizard.py (main 35ea7bc, lines 255-2434) against all 26 test modules that import it: the 320 survivors that only wrap a sentence in "XX" are expected survivors (the tests check wording with assertIn, which the wrapped text still passes), and so are the logic survivors where a wrong result would not lose data, restore the wrong thing or report success on a failure (ownership hand-over words, timeouts and capture flags of lsblk/findmnt/mount/umount, size and count wording); list in runs/t6/killwiz.log and wiz-group-*.txt.
+mutmut 2.5 (with the line hook above) on the Python files the 1.0 round's recovery drills run
+for real, on main 35ea7bc and, for the Nextcloud bring-back, on `release-1.0.0` 1f7806d. Tests
+only: no mutant turned out to be a bug, and no product code was changed. Each row is a
+findings row of the round (`T6-rc1` to `T6-rc7`). The kill counts were checked against
+mutmut's own mutants; the lists of survivors are in the rig's logs.
+
+| Row | Mutated | Survivors before | Tests added | Left, and why |
+| --- | --- | --- | --- | --- |
+| T6-rc1 | `permission_checks.py`, `config_checks.py` (`unknown_settings`, the job time), `neko_restore.py` (`CardRoot`): the lines split out in 0.52.2 | 34, 10 and 1 | `tests/test_permission_checks.py` (12), `tests/test_mistyped_settings.py` (the whole warning lines, `JobTimeTests`), `tests/test_neko_restore.py` (the whole sentence) | equivalent: permission_checks 11 and 12 (`safe_path` refuses the link before), config_checks 269 (only the closest match is used) |
+| T6-rc2 | `gateway_tools.py`: `_apply_lan`, `start_lan_gateway`, `owned_listeners`, `set_tailnet_routes` | 58 | `tests/test_gateway_lan_apply.py` (10) | none: every hand-made mutant of those functions is killed |
+| T6-rc3 | `snapshot_restore.py`, the whole file | 124 | `tests/test_snapshot_refusals.py` (33): 95 killed | equivalent: Kind defaults (both kinds set them), `.` checks (`PurePosixPath` already drops them), the 128 MB edge, inventory values, `followlinks` (a link is refused by `safe_path` either way), open flags (the folder is new), buffer sizes, owner and time order (as root and after every file exists the order changes nothing); `--help` wording |
+| T6-rc4 | `backup_secrets.py` and `recover.py`, the whole files | 100 and 84 | `tests/test_backup_secrets_words.py` (32), `tests/test_recover_command.py` (11) | equivalent: stdin and timeouts given to openssl and tar, the password's line end (both ends the same), `mkdir` parents under `/etc`, the staging folder's name, `rmtree` `ignore_errors`, `-recip`; recover.py's `--help` wording (15) |
+| T6-rc5 | `recovery_tools.py` outside the 0.52.2 ranges | 21 (and 6 timeouts: loops that hang, caught) | `tests/test_recovery_command_failures.py` (12): all 21 killed | none |
+| T6-rc6 | `recovery_wizard.py`, the restore path (lines 255-2434), against all 26 test modules that import it | 563 | `tests/test_wizard_checked_copies.py` (44), `tests/test_restore_dates_and_accepted.py` (9): 113 killed | 320 that only wrap a sentence in `XX` (the tests check wording with `assertIn`, which the wrapped text still passes); 12 logic survivors that are equivalent; and, cut from scope (below), the logic survivors where a wrong result would not lose data, restore the wrong thing or report success on a failure |
+| T6-rc7 | `nextcloud_restore.py` (setup's Nextcloud bring-back after a new SSD), the whole file | 194 (and 7 timeouts, caught) | `tests/test_nextcloud_restore_choices.py` (25): 67 of the 98 logic survivors killed | 96 that only wrap a sentence; equivalent: buffer sizes, ties at equal times, `""` against `None` for no dump, `~mode` masked to 0755 by the kernel; minor, left untested: `own_ids` following a symlinked `appdata_` folder, the `exist_ok`/`parents` flags of `mkdir`, `rmtree` `ignore_errors` |
+
+Cut from the scope of this round, and why: in `recovery_wizard.py` the USB and NAS mount
+wrappers and the `lsblk`/`findmnt`/`mount`/`umount` calls (their timeouts and capture flags),
+the ownership hand-over of a restored folder, and the words of the `restore_*` steps. None of
+them decides what is restored or whether a restore is reported as passed; the mount wrappers
+need a real drive to say anything and are covered by the recovery drills on the VM instead.
+Seen on the way: as a normal user the `chown` of the restore folder's parent fails first, so
+`restore_music`'s hand-over success branch is never run by CI.

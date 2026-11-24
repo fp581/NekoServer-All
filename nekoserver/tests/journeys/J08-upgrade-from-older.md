@@ -4,8 +4,10 @@
 ID: J08
 Purpose: A server set up by an older release is upgraded whole, keeps its own times and settings,
   and has a checked way back
-Preconditions: a fresh 0.47.9 install on the VM (rig fresh-old.sh) with data in the apps
-Actions: from the dashboard (or sudo python3 upgrade.py <tag>) upgrade to the release under test;
+Preconditions: the previous release installed with data in the apps (the VM's checkpoint of it:
+  0.52.3 for 1.0.0); for the older path, a fresh 0.47.9 install (rig fresh-old.sh)
+Actions: the new release's sudo bash install.sh, or the dashboard's upgrade (or sudo python3
+  upgrade.py <tag>), to the release under test;
   read the upgrade log; then, from the snapshot again, make the check fail (rig stuck-way-back.sh
   upgrade, then stuck-way-back.sh resume) and read what the server runs
 Expected: see below
@@ -17,6 +19,17 @@ Cleanup: restore the 0.47.9 snapshot
 ## Expected results
 
 The upgrade that works:
+
+- Setup's first page reads `Review this NekoServer update` and `From <old> to <new>`, and the
+  saved answers are kept.
+- A server from before 1.0.0 moves from the `beta` channel to `stable` once, without a question,
+  and setup says: `Updates: this server is offered stable NekoServer releases only from now on
+  (stable is the default since 1.0.0). To be offered betas again, set "nekoserver_channel":
+  "beta" under "maintenance" in my-config.json and run setup again`
+  (`test_a_beta_channel_from_before_1_0_0_moves_to_stable_once`, tests/test_installer_flow.py);
+  a server already on `stable` is left as it is (`test_a_stable_channel_is_left_as_it_is`,
+  tests/test_installer_flow.py); a server that chose no channel is offered stable releases only
+  (`a_server_that_chose_no_channel_is_offered_stable_releases_only`, runtime/src/updates.rs).
 
 - The older release's copy stays at `/srv/nekoserver/installer/releases/v0.47.9`
   (`kept_release`, upgrade.py:169); without it the upgrade is refused with `This release's
@@ -58,3 +71,10 @@ The upgrade whose check fails:
 The rig scripts `fresh-old.sh`, `stuck-way-back.sh` and `cut.sh` (an upgrade cut off,
 then `nekoserver-upgrade-resume.service`) drive it; reading the dashboard is by eye.
 0.48.1 gate: not tested (unit tests and the earlier-round rig scripts).
+
+1.0.0 round (`tests/COVERAGE-MAP.md`): partly proved. VM, from the installed v0.52.3
+checkpoint by the new release's setup: to e09cdbd (33 of 34, the phone step waiting), to 37843d5
+(T1-gate-37843d5: the first page, the answers kept, the one-time move to stable said as above,
+16 of 16 containers, the dashboard on 1.0.0 with no alert, a restart fine) and to 7efba8a. Not
+run: the upgrade from 0.47.9, the dashboard's upgrade button, and the check made to fail. The
+channels drill on the final commit 597c800: pending.

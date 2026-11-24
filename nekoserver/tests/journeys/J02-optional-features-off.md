@@ -43,3 +43,5 @@ Checking the dashboard cards is by eye (a screenshot is the evidence). The rest 
 driven by the rig's rules with the four switches off.
 
 0.48.1 gate: not tested (unit tests only).
+
+1.0.0 round: not tested (unit tests only).
