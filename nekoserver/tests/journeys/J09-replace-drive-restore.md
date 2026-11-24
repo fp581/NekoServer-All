@@ -122,4 +122,6 @@ expect). Monthly snapshot restore and drive replacement: not tested.
 1.0.0 round (`tests/COVERAGE-MAP.md`): proved on the VM, on earlier commits of the release
 branch: both drives lost on e09cdbd (after T1-R1 to T1-R4 were found on 35ea7bc), the SSD lost
 on 047ee3d (T1-R5, T1-R9; from the monthly snapshot and from the nightly backup), the HDD lost
-on 047ee3d (T1-R6). The three drills on the final commit 597c800: pending.
+on 047ee3d (T1-R6). The three drills on the final commit 597c800 passed (T1-final-2 to T1-final-4), with
+T1-R13 (downloads after a whole-server restore, fixed and proved on e2da4a2) and T1-R14 (a
+link share lost with a file uploaded again; the steps now say so).

@@ -178,6 +178,30 @@ class RootOnlyFolderTests(unittest.TestCase):
         self.assertIn('sudo ls -l /media/$USER/*/immich-database/', steps)
 
 
+def new_hdd_text(recovery):
+    """RECOVERY.md's words for a new HDD, in the row "The SSD or the HDD broke"."""
+    return recovery.split('After a new HDD, Nextcloud starts again')[1].split(chr(10))[0]
+
+
+class AfterALostDriveTests(unittest.TestCase):
+    """1.0 round T1-R14 and T1-final-4: after a whole-server restore or a new HDD, RECOVERY.md
+    has the Nextcloud files uploaded again, and a file uploaded again is a new file to
+    Nextcloud, so the link shared to it is gone although the database copy holds the share.
+    And after a new HDD Jellyfin keeps listing the films lost with it (films are not backed
+    up) until a library scan. Both are said where the reader does that step."""
+
+    def test_the_upload_again_says_shared_links_do_not_come_back(self):
+        recovery = doc('RECOVERY.md')
+        step5 = recovery.split("### Nextcloud's database")[1].split(chr(10) + '5. ')[1].split(chr(10))[0]
+        self.assertIn('Links you had shared to files you upload again do not come back', step5)
+        self.assertIn('Links you had shared to those files do not come back with them', new_hdd_text(recovery))
+
+    def test_a_new_hdd_says_how_jellyfin_forgets_the_lost_films(self):
+        new_hdd = new_hdd_text(doc('RECOVERY.md'))
+        self.assertIn('Films and shows are not backed up', new_hdd)
+        self.assertIn('*Dashboard* → *Libraries* → *Scan All Libraries*', new_hdd)
+
+
 class FirstReadTests(unittest.TestCase):
     """1.0 round T5-02 to T5-05: what a first-time reader of the README is told matches
     what setup and install.sh do."""
@@ -748,6 +772,22 @@ class ToolHelpTests(unittest.TestCase):
 
         for tool in ('acceptance.py', 'account-setup.py', 'recover.py', 'migrate.py', 'music-setup.py'):
             self.assertIn(' '.join(neko_common.SETTINGS_HELP.split()[:6]), ' '.join(self.help_of(tool).split()))
+
+
+class MirrorThatLostADriveTests(unittest.TestCase):
+    """1.0 round T1-R19: a mirror (mdadm) with a drive missing is started on the drive left
+    about a minute into the start (nekoserver-mirror-start.timer), so the docs say the
+    server starts on it after a restart too, and the rebuild is the mdadm --add steps (1.0.0
+    has no rebuild button)."""
+
+    def test_recovery_says_the_server_starts_on_the_drive_left_and_how_to_rebuild(self):
+        row = doc('RECOVERY.md').split('**A drive of a RAID array failed**')[1].split(chr(10))[0]
+        self.assertIn('starts on it after a restart too', row)
+        self.assertIn('sudo mdadm /dev/md0 --add /dev/sdX', row)
+        self.assertNotIn('button', row)
+
+    def test_storage_names_the_timer_that_starts_the_mirror(self):
+        self.assertIn('nekoserver-mirror-start.timer', doc('STORAGE.md'))
 
 
 if __name__ == '__main__':

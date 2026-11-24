@@ -80,4 +80,6 @@ in earlier rounds on the WSL distros, not yet a stage of the VM gate.
 the warning above and Update now then installed it. The monthly run's roll-back on a real
 install was not reached: on NekoArch v0.52.3 (T2-monthly) every run stopped, correctly, at the
 check before the update, for the rig's own settings. The stopped update was not driven. The
-roll-back drill on the final commit 597c800: pending.
+roll-back drill on the final commit 597c800 passed (T1-final-9): Prowlarr's Update now with
+the new container killed while it was checked was undone after 5 minutes; Prowlarr ran on its
+old image, the update stayed pending for next week, and the dashboard's warning said so.

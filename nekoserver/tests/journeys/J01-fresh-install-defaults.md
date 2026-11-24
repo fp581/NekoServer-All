@@ -67,4 +67,6 @@ random, Nextcloud never installed (28 of 34) when its made-up admin password sta
 "-" (T1-R12; fixed in 9df689b and 7946397). A Debian update that wants a restart stops setup
 first (`No restart pending from an earlier update is required`), which is right. WSL fresh
 installs with the recommended answers on Arch, Fedora, AlmaLinux and openSUSE passed, apart
-from what WSL cannot do. The fresh install on the final commit 597c800: pending.
+from what WSL cannot do. The fresh install on the final commit 597c800 passed (T1-gate-597c800): 33 of 34 (the phone
+check), 16 of 16 containers, Nextcloud installed, the nightly backup and a settings restore
+worked, and after a restart every app answered.

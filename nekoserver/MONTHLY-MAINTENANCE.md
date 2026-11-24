@@ -157,7 +157,7 @@ Monthly update readiness distinguishes automated checks from the three explicitl
 
 ## Major version updates
 
-Monthly updates install new versions within the major version you have (for example Immich v2.1 to v2.2, Nextcloud 31.0.5 to 31.0.6). A new **major** version (Immich v3, Nextcloud 32) can need extra steps, so it is never installed on its own. When one is out, the dashboard shows a warning such as "Nextcloud 32 is available (you have 31)".
+The weekly app updates install new versions within the major version you have (for example Immich v2.1 to v2.2, Nextcloud 31.0.5 to 31.0.6). A new **major** version (Immich v3, Nextcloud 32) can need extra steps, so it is never installed on its own. When one is out, the dashboard shows a warning such as "Nextcloud 32 is available (you have 31)".
 
 To install it:
 
