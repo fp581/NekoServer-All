@@ -423,6 +423,22 @@ class OutOfTheWayTests(unittest.TestCase):
                 self.assertEqual(copy.relative_to(root).parts[0][:11], 'nekoserver-')
                 self.assertFalse([r for r in read if r == copy or r in copy.parents], copy)
 
+    def test_a_folder_in_a_copy_is_never_one_of_the_persons_media_folders(self):
+        import existing_media
+
+        with tempfile.TemporaryDirectory() as tmp:
+            config = {'data_mount': f'{tmp}/ssd', 'media_mount': f'{tmp}/media'}
+            mine = Path(tmp) / 'd3/My films'
+            old = Path(tmp) / f'd3/nekoserver-old-movies-{ID}/library/movies'
+            for folder in (mine, old):
+                folder.mkdir(parents=True)
+            self.assertEqual(existing_media.checked_folder(config, str(mine)), str(mine))
+            with self.assertRaises(existing_media.Refused) as refused:
+                existing_media.checked_folder(config, str(old))
+            self.assertEqual(refused.exception.code, 'own')
+            with self.assertRaises(RuntimeError):
+                existing_media.usable_saved_path(config, 'movies', str(old))
+
     def test_a_whole_drive_move_waits_for_a_drives_job_that_is_not_finished(self):
         with tempfile.TemporaryDirectory() as tmp:
             (Path(tmp) / 'journal.json').write_text('{}')
