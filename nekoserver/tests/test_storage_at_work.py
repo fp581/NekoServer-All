@@ -118,12 +118,14 @@ class AtWorkTests(unittest.TestCase):
     def test_a_backup_at_work_still_holds_the_move_up(self):
         for unit in ('nekoserver-app-backup.service', 'nekoserver-something-new.service'):
             systemd = Systemd(at_work=['nekoserver-storage.service', unit])
-            with self.assertRaisesRegex(RuntimeError, re.escape(unit) + ' is at work'):
+            busy = re.escape(unit) + ' is at work'
+            with self.assertRaisesRegex(RuntimeError, busy):
                 self.stop(systemd)
 
     def test_a_whole_drive_move_still_waits_for_a_drives_job(self):
+        systemd = Systemd(at_work=['nekoserver-storage.service'])
         with self.assertRaisesRegex(RuntimeError, 'nekoserver-storage.service is at work'):
-            self.stop(Systemd(at_work=['nekoserver-storage.service']), own=())
+            self.stop(systemd, own=())
 
     def test_every_unit_of_nekoserver_is_either_quiet_or_waited_for(self):
         named = unit_names() - {'nekoserver-foo.service', 'nekoserver-no-such-resume.service'}
