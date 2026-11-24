@@ -191,7 +191,12 @@ class StartTests(unittest.TestCase):
         unit = 'nekoserver-gateway-lan.service'
         self.assertEqual(
             [call.args[0] for call in command.call_args_list],
-            [['systemctl', 'daemon-reload'], ['systemctl', 'enable', unit], ['systemctl', 'restart', unit]],
+            [
+                ['systemctl', 'daemon-reload'],
+                ['systemctl', 'enable', unit],
+                ['systemctl', 'reset-failed', unit],
+                ['systemctl', 'restart', unit],
+            ],
         )
 
     def test_a_service_that_does_not_start_is_stopped_and_the_failure_kept(self):

@@ -242,8 +242,9 @@ class RestoreAsOfTests(Restoring):
         ):
             code = recovery_wizard.menu_loop(self.config, answers('1', '2', '1', '1', '1', 'yes'), out.append)
         self.assertEqual(code, 1)
-        folder = next((self.media / 'restored').iterdir())
+        folder = next(p for p in (self.media / 'restored').iterdir() if p.is_dir())
         self.assertEqual([p.name for p in (folder / 'files').iterdir()], ['keep.txt'])
+        self.assertTrue(recovery_wizard.incomplete_mark(folder).is_file())  # the next menu run names it (T1-R15)
         said = '\n'.join(out)
         self.assertIn(f'The restore was stopped part-way: {folder} holds only some of it (incomplete)', said)
         self.assertIn(f'sudo rm -r "{folder}"', said)

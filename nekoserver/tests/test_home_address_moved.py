@@ -44,6 +44,33 @@ class HomeAddressMovedTests(unittest.TestCase):
         self.assertIn(['systemctl', 'enable', gateway_tools.GATEWAY_LAN_UNIT], ran)
         self.assertEqual(ran[-1], ['systemctl', 'restart', gateway_tools.GATEWAY_LAN_UNIT])
 
+    def test_a_gateway_that_used_up_its_start_limit_while_it_waited_is_started_again(self):
+        """1.0 round T1-R18: at boot the gateway waited 240 s for the old address, failed,
+        and Restart=on-failure used up StartLimitBurst=6 in 30 minutes. systemd then refused
+        setup's restart ("Access at home did not finish: Gateway command failed (systemctl
+        restart nekoserver-gateway-lan.service)"), for 30 minutes, however often setup ran:
+        the very fix the dashboard's "home address changed" alert gives."""
+        unit = gateway_tools.GATEWAY_LAN_UNIT
+        limit_hit = [True]
+
+        def systemctl(args, **_):
+            if args == ['systemctl', 'reset-failed', unit]:
+                limit_hit[0] = False
+            elif args == ['systemctl', 'restart', unit] and limit_hit[0]:
+                raise gateway_tools.CommandFailed(
+                    f'Gateway command failed (systemctl restart {unit}): Job for {unit} failed because '
+                    'start of the service was attempted too often.',
+                    1,
+                    '',
+                    f'Job for {unit} failed because start of the service was attempted too often.\n',
+                )
+            return ''
+
+        with mock.patch.object(gateway_tools, 'command', side_effect=systemctl) as called:
+            gateway_tools.start_lan_gateway()
+        self.assertEqual(called.call_args_list[-1].args[0], ['systemctl', 'restart', unit])
+        self.assertFalse(limit_hit[0])
+
 
 if __name__ == '__main__':
     unittest.main()

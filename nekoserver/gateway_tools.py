@@ -162,8 +162,11 @@ def command(args, timeout=30, env=None):
     except subprocess.TimeoutExpired:
         raise RuntimeError(f'Gateway command took over {timeout} seconds ({what})') from None
     if p.returncode:
-        # The command's own last error line says what to fix (no values are in it).
-        last = next((line.strip() for line in reversed(p.stderr.splitlines()) if line.strip()), 'no reason given')
+        # The command's own last error line says what to fix (no values are in it); not
+        # tailscale's "try `tailscale serve --help`" under it, which hid the reason (T1-R16).
+        lines = [line.strip() for line in p.stderr.splitlines() if line.strip()]
+        last = next((line for line in reversed(lines) if not line.startswith('try `')), None)
+        last = last or (lines[-1] if lines else 'no reason given')
         raise CommandFailed(f'Gateway command failed ({what}): {last[-300:]}', p.returncode, p.stdout, p.stderr)
     return p.stdout
 
@@ -703,6 +706,9 @@ def start_lan_gateway():
     # waiting for an old home-network address (minutes) and time out; restart replaces it.
     command(['systemctl', 'enable', GATEWAY_LAN_UNIT])
     try:
+        # Waiting at boot for a home address that changed, it failed over and over and used
+        # up its start limit; systemd then refused this restart for 30 minutes (T1-R18).
+        command(['systemctl', 'reset-failed', GATEWAY_LAN_UNIT])
         command(['systemctl', 'restart', GATEWAY_LAN_UNIT])
     except RuntimeError:
         command(['systemctl', 'stop', GATEWAY_LAN_UNIT])
@@ -1054,15 +1060,34 @@ def only(state, ports):
     }
 
 
+def here(state, ports, host):
+    """The part of a Serve state on these ports under this server's current name. Routes
+    set under its old name stay in Tailscale's state after a rename, and tailscale serve
+    can neither change nor remove them any more (it looks under the current name only);
+    nothing reaches them, as the old name is no longer this server's (T1-R16)."""
+    part = only(state, ports)
+    return {'TCP': part['TCP'], 'Web': {k: v for k, v in part['Web'].items() if k.rpartition(':')[0] == host}}
+
+
+def route_off(port):
+    """tailscale serve's route on this port switched off. One that is not there under the
+    current name (set under an old name) is off already: "handler does not exist"."""
+    try:
+        command(['tailscale', 'serve', '--bg', https(port), 'off'])
+    except CommandFailed as exc:
+        if 'handler does not exist' not in exc.stderr:
+            raise
+
+
 def set_tailnet_routes(state, mine, target, host):
     """Tailscale's routes made as `target` says, from how they are (`state`): NekoServer's
     own routes (`mine`) that are no longer wanted go first, then each one not yet as wanted."""
     for port in sorted(mine):
-        # Ours but no longer wanted, or set under the server's old name: off first.
-        if port not in target['TCP'] or only(state, {port}) != only(target, {port}):
-            command(['tailscale', 'serve', '--bg', https(port), 'off'])
+        # Ours but no longer wanted, or set differently: off first.
+        if port not in target['TCP'] or here(state, {port}, host) != only(target, {port}):
+            route_off(port)
     for port in target['TCP']:
-        if only(state, {port}) == only(target, {port}):
+        if here(state, {port}, host) == only(target, {port}):
             continue
         command(
             ['tailscale', 'serve', '--bg', https(port), target['Web'][host + ':' + port]['Handlers']['/']['Proxy']],
@@ -1107,12 +1132,12 @@ def _apply_tailnet(config):
     atomic_json(ledger, {'format': 'neko-tailnet-owned-v1', 'host': host, 'owned': union, 'status': 'pending'})
     try:
         set_tailnet_routes(state, mine, target, host)
-        if only(serve_state(), set(target['TCP'])) != target:
+        if here(serve_state(), set(target['TCP']), host) != target:
             raise RuntimeError('Tailnet routes did not match the planned private configuration')
     except (RuntimeError, ValueError, TypeError) as exc:
         # Fail closed for our routes (only those) when they are still recognisable.
         for port in sorted(ours(serve_state(), union)):
-            command(['tailscale', 'serve', '--bg', https(port), 'off'])
+            route_off(port)
         raise RuntimeError(
             f'Tailscale addresses not set up ({exc}). The addresses were switched off again until the next run'
         ) from None
@@ -1155,9 +1180,9 @@ def refresh_dashboard_route(config, log):
     board = dashboard_target(config)
     if port not in owned['TCP'] or port not in ours(state, owned):
         return False
-    if handlers(state['Web'], port) == [{'Handlers': {'/': {'Proxy': board}}}]:
+    if handlers(here(state, {port}, host)['Web'], port) == [{'Handlers': {'/': {'Proxy': board}}}]:
         return False
-    command(['tailscale', 'serve', '--bg', https(port), 'off'])
+    route_off(port)
     if board:
         command(['tailscale', 'serve', '--bg', https(port), board], 45)
     kept = only(owned, set(owned['TCP']) - {port})
