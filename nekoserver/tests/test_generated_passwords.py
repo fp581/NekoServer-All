@@ -32,7 +32,7 @@ class GeneratedPasswordStartTests(unittest.TestCase):
             _, password = account_store.generate('nextcloud')
             self.assertIn(password[0], SAFE_FIRST, password)
             self.assertEqual(len(password), 32)
-            self.assertTrue(set(password) <= SAFE_FIRST | {'-', '_'}, password)
+            self.assertLessEqual(set(password), SAFE_FIRST | {'-', '_'}, password)
             for group in (string.ascii_lowercase, string.ascii_uppercase, string.digits):
                 self.assertTrue(any(ch in group for ch in password), password)
 
