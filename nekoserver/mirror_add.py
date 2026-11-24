@@ -17,6 +17,7 @@ partition table of its own: the drive is checked and laid out there, by the one 
 Commands are lists, never a shell. Tests give `run` and the /sys folder: no disk is touched.
 """
 
+import os
 import re
 import time
 from pathlib import Path
@@ -29,6 +30,11 @@ BALANCE = ['-dconvert=raid1,soft', '-mconvert=raid1,soft']
 REBUILDING = ('recover', 'resync', 'repair', 'reshape')
 # A partition table needs room beyond the partition itself (GPT's copy at the end).
 TABLE_ROOM = 1 << 20
+# mdadm metadata 0.90 and 1.0 keep their superblock at the end of a member, past the data.
+END_ROOM = 4 << 20
+END_METADATA = ('0.90', '1.0')
+# The longest a look at a Btrfs replace may take: a hung one never holds the job for ever.
+STATUS_LIMIT = 120
 
 
 def line(path):
@@ -74,7 +80,8 @@ def md_array(sys_block, name):
             # A partition: the new drive gets one of the same size at the same place.
             need = (start + (number(partition / 'size') or 0)) * 512 + TABLE_ROOM
         else:
-            need = offset * 512 + component * 1024
+            version = (line(md / 'metadata_version') or '').split(':')[-1]
+            need = offset * 512 + component * 1024 + (END_ROOM if version in END_METADATA else 0)
     return {
         'id': f'md-{name}',
         'kind': 'md',
@@ -101,12 +108,17 @@ def btrfs_pool(run, uuid):
             present = path
     rc, mounted = run(['findmnt', '-n', '-o', 'TARGET', '--source', f'UUID={uuid}'])
     mount = mounted.splitlines()[0].strip() if rc == 0 and mounted.strip() else None
+    # A replace at work still lists the missing device until it ends: ask Btrfs itself.
+    rebuilding = False
+    if mount:
+        rc, said = run(['btrfs', 'replace', 'status', '-1', mount], timeout=STATUS_LIMIT)
+        rebuilding = rc != 0 or '% done' in said or 'running' in said.lower()
     return {
         'id': f'btrfs-{uuid}',
         'kind': 'btrfs',
         'dev': None,
         'degraded': missing is not None,
-        'rebuilding': False,
+        'rebuilding': rebuilding,
         'devid': missing[0] if missing else None,
         'like': present,
         'mount': mount,
@@ -205,12 +217,36 @@ def run_job(request, ctx):
     except ctx.refused as e:
         ctx.clear()
         return {'state': 'failed', 'message': str(e), 'advice': None}
-    ctx.journal('add', committed=False, undo={'disk': disk, 'target': target})
+    # The new member by its stable name: kernel names change across a restart.
+    member = member_name(disk['by_id'], target, ctx.dev)
+    ctx.journal('add', committed=False, undo={'disk': disk, 'member': member})
     ctx.progress('add')
-    return add(array, target, ctx)
+    return add(array, target, member, ctx)
 
 
-def add(array, target, ctx):
+def resolve(dev, name):
+    """The kernel name a /dev/disk/by-id name leads to now, or None."""
+    if not name:
+        return None
+    try:
+        return Path(os.readlink(Path(dev) / 'disk' / 'by-id' / name)).name
+    except OSError:
+        return None
+
+
+def member_name(by_id, target, dev):
+    """The by-id name of what erase laid out: the disk, or its partition ("-partN")."""
+    disk = resolve(dev, by_id)
+    name = Path(target).name
+    if disk is None:
+        return None
+    if name == disk:
+        return by_id
+    found = re.fullmatch(re.escape(disk) + r'p?(\d+)', name)
+    return f'{by_id}-part{found[1]}' if found else None
+
+
+def add(array, target, member, ctx):
     if array['kind'] == 'md':
         rc, said = ctx.run(['mdadm', array['dev'], '--add', target])
         if rc != 0:
@@ -234,24 +270,25 @@ def add(array, target, ctx):
             'message': 'The pool did not take the new drive, so nothing was changed in it. The new drive was erased.',
             'advice': (said.strip().splitlines() or [''])[-1][:300] or None,
         }
-    ctx.journal('rebuild', committed=True, undo={'array': array['id'], 'target': target})
+    ctx.journal('rebuild', committed=True, undo={'array': array['id'], 'member': member})
     return finish_btrfs(array, ctx)
 
 
 def finish_btrfs(array, ctx):
     """Wait for Btrfs's replace, then mirror what was written meanwhile (RECOVERY.md)."""
     while True:
-        rc, said = ctx.run(['btrfs', 'replace', 'status', '-1', array['mount']])
+        rc, said = ctx.run(['btrfs', 'replace', 'status', '-1', array['mount']], timeout=STATUS_LIMIT)
         done = re.search(r'([\d.]+)% done', said)
         if rc == 0 and done:
             ctx.progress('rebuild', percent=float(done[1]))
         elif rc == 0 and ('finished' in said.lower() or 'never started' in said.lower()):
             break
         else:
-            ctx.clear()
+            # Btrfs may well go on copying: the journal stays, so no other job is taken, and
+            # the next start finishes this one (`finish`).
             return {
                 'state': 'failed',
-                'message': 'Copying onto the new drive stopped. Your data is still on the drives left.',
+                'message': 'The copy onto the new drive could not be followed. Btrfs goes on with it by itself; restart the server, and the dashboard then finishes it.',
                 'advice': (said.strip().splitlines() or [''])[-1][:300] or None,
             }
         ctx.sleep(10)
@@ -274,15 +311,15 @@ def finish_btrfs(array, ctx):
 def resume(journal, ctx):
     """At boot, a job cut off by a power cut: before the add, nothing was changed in the
     mirror (undone); after it, the rebuild goes on by itself (resumed). A Btrfs rebuild cut
-    off is waited for and balanced by the job started again (`again` is True)."""
+    off: {'again': True}, and storage_jobs starts the job again, which calls `finish` (never
+    an erase, never another replace)."""
     request = journal.get('request') or {}
     undo = journal.get('undo') or {}
     phase = journal.get('phase')
     array = find(request.get('array'), ctx.run, ctx.sys_block)
-    target = undo.get('target')
     if phase == 'rebuild' and array and array['kind'] == 'btrfs':
         return {'again': True}
-    member = array is not None and target and is_member(array, target, ctx)
+    member = array is not None and is_member(array, undo.get('member'), ctx)
     ctx.clear()
     if member:
         return {
@@ -305,20 +342,38 @@ def resume(journal, ctx):
     }
 
 
-def is_member(array, target, ctx):
-    kname = Path(target).name
+def finish(journal, ctx):
+    """A Btrfs rebuild started before a restart: waited for and balanced. Nothing is erased
+    and no replace is started."""
+    array = find((journal.get('request') or {}).get('array'), ctx.run, ctx.sys_block)
+    if array is None or array['kind'] != 'btrfs' or not array['mount']:
+        return {
+            'state': 'failed',
+            'message': 'The pool is not open, so the copy onto the new drive cannot be finished now. Restart the server once more.',
+            'advice': None,
+        }
+    return finish_btrfs(array, ctx)
+
+
+def is_member(array, member, ctx):
+    """Whether the new member (its by-id name) is in the mirror now."""
+    kname = resolve(ctx.dev, member)
+    if kname is None:
+        return False
     if array['kind'] == 'md':
         return (Path(ctx.sys_block) / Path(array['dev']).name / 'md' / f'dev-{kname}').is_dir()
     rc, said = ctx.run(['btrfs', 'filesystem', 'show', '--raw', array['id'][len('btrfs-') :]])
-    return rc == 0 and re.search(rf'path\s+{re.escape(target)}\s*$', said, re.M) is not None
+    return rc == 0 and re.search(rf'path\s+/dev/{re.escape(kname)}\s*$', said, re.MULTILINE) is not None
 
 
 class Context:
     """What the job is given by storage_jobs: its runner, its erase and the exception that
-    erase raises, its journal, progress and clear (journal removed), the /sys folder, and a
-    clock (tests give their own)."""
+    erase raises, its journal, progress and clear (journal removed), the /sys and /dev
+    folders, and a clock (tests give their own). `run(argv, timeout=None)` never uses a shell."""
 
-    def __init__(self, run, erase, refused, journal, progress, clear, sys_block='/sys/block', sleep=time.sleep):
+    def __init__(
+        self, run, erase, refused, journal, progress, clear, sys_block='/sys/block', dev='/dev', sleep=time.sleep
+    ):
         self.run = run
         self.refused = refused  # the exception storage_jobs' erase raises, in the person's words
         self.erase = erase
@@ -326,4 +381,5 @@ class Context:
         self.progress = progress
         self.clear = clear
         self.sys_block = sys_block
+        self.dev = dev
         self.sleep = sleep
