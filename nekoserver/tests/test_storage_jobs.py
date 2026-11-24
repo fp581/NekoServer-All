@@ -60,6 +60,8 @@ class Jobs(unittest.TestCase):
             mock.patch.object(migrate, 'stop_writers', self.stop_writers),
             mock.patch.object(migrate, 'start_again', lambda stopped, out=print: self.started.append(stopped)),
             mock.patch.object(migrate, 'server_check', lambda config, before: None),
+            # The look written after a job reads the computer's disks: never in these tests.
+            mock.patch.object(storage_jobs, 'look', lambda config: {'disks': []}),
         ):
             patch.start()
             self.addCleanup(patch.stop)
