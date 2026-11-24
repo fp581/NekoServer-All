@@ -760,7 +760,7 @@ RUN_FOLDER = Path(FACTS.get('folder', '/run/nekoserver-control/storage'))
 NEW_COPY = 'nekoserver-new-{kind}-{id}'
 OLD_NAME = 'nekoserver-old-{kind}-{id}'
 DELETING = 'nekoserver-deleting-{kind}-{id}'
-JOBS = ('look', 'use', 'release', 'move', 'back', 'delete_old')
+JOBS = ('look', 'use', 'release', 'move', 'back', 'delete_old', 'mirror_add')
 
 
 class Stop(RuntimeError):
@@ -781,7 +781,7 @@ class Job:
         self.started = time.time()
 
     def words(self, step):
-        kind = KIND_WORDS.get(self.request.get('kind'), '')
+        kind = FACTS.get('kind_words', {}).get(self.request.get('kind'), '')
         return FACTS.get('step_words', {}).get(step, step).replace('{kind}', kind)
 
     def progress(self, step, **counts):
@@ -1242,6 +1242,39 @@ def delete_old(job):
 WORK = {'use': use, 'release': release, 'move': move, 'back': back, 'delete_old': delete_old}
 
 
+# ---- D: a mirror's replacement drive (mirror_add.py, T2's; given this file's erase) ---------
+
+
+def mirror_context(job):
+    import mirror_add
+
+    def ran(argv):
+        import subprocess
+
+        done = subprocess.run(argv, capture_output=True, text=True, timeout=600, check=False)
+        return done.returncode, done.stdout + done.stderr
+
+    return mirror_add.Context(
+        run=ran,
+        erase=lambda *given, **named: erase(*given, config=job.config, **named),
+        refused=Refused,
+        journal=lambda phase, committed=False, undo=None: job.journal(phase, committed, **(undo or {})),
+        progress=job.progress,
+        clear=lambda: (job.state / JOURNAL).unlink(missing_ok=True),
+    )
+
+
+def mirror_job(job):
+    """Job D: the disk is the one the page showed and the words typed are its words, then
+    mirror_add.py lays it out like the member still there (this file's erase) and adds it."""
+    import mirror_add
+
+    row = chosen_disk(job, 0)
+    if not same_words(job.request.get('confirm', ''), confirm_words(row)):
+        raise Stop('The words typed do not match the disk. Nothing was erased.', f'Type exactly: {confirm_words(row)}')
+    return mirror_add.run_job(job.request, mirror_context(job))
+
+
 # ---- running a request, and the boot's resume ------------------------------------------------
 
 
@@ -1278,6 +1311,8 @@ def run_request(request, config, settings_files, state=None, folder=None, out=pr
 def worked(job):
     job.result('working', '')
     try:
+        if job.job == 'mirror_add':
+            return mirror_result(job, mirror_job(job))
         message = WORK[job.job](job)
     except Stop as stop:
         saved = read_state(JOURNAL, job.state) or {}
@@ -1303,6 +1338,12 @@ def worked(job):
     return 0
 
 
+def mirror_result(job, fields, power_cut=False):
+    job.result(fields['state'], fields['message'], fields.get('advice'), fields.get('power_cut', power_cut))
+    job.done()
+    return 0 if fields['state'] in ('done', 'resumed') else 1
+
+
 def resume(config, settings_files, state=None, folder=None, out=print):
     """At the start of the computer, before Docker: a job a power cut stopped is undone
     (before its commit point) or finished (after it). A finish that needs Docker (setup run
@@ -1316,11 +1357,15 @@ def resume(config, settings_files, state=None, folder=None, out=print):
     if missing:
         job.result('failed', f'The job is finished when {place_words(missing)} is back.', 'Plug it in and restart.')
         return 1
+    if job.job == 'mirror_add' and not saved.get('committed'):
+        import mirror_add
+
+        return mirror_result(job, mirror_add.resume(saved, mirror_context(job)), power_cut=True)
     if not saved.get('committed') and not undo_cut_off(job, saved):
         job.result('undone', UNDONE_WORDS.get(job.job, UNDONE_WORDS['move']), power_cut=True)
         job.done()
         return 0
-    if job.job in ('move', 'back', 'use'):
+    if job.job in ('move', 'back', 'use', 'mirror_add'):
         run(
             [
                 'systemd-run',
@@ -1329,6 +1374,7 @@ def resume(config, settings_files, state=None, folder=None, out=print):
                 '--property=After=docker.service',
                 '--property=TimeoutStartSec=infinity',
                 sys_executable(),
+                '-Es',
                 str(Path(__file__).resolve()),
                 'finish',
                 *[f'--config={p}' for p in settings_files],
@@ -1431,6 +1477,8 @@ def finish(config, settings_files, state=None, folder=None, out=print):
     job = Job(saved['request'], config, settings_files, state, folder, out)
     kind = job.request.get('kind')
     try:
+        if job.job == 'mirror_add':
+            return finish_mirror(job, saved)
         if job.job == 'use':
             setup_again(job)
         else:
@@ -1449,6 +1497,19 @@ def finish(config, settings_files, state=None, folder=None, out=print):
     return 0
 
 
+def finish_mirror(job, saved):
+    """A Btrfs replacement a power cut stopped: Btrfs goes on with it by itself; it is
+    waited for here (after the start, never holding it up) and the balance run."""
+    import mirror_add
+
+    ctx = mirror_context(job)
+    array = mirror_add.find(saved['undo'].get('array'), ctx.run, ctx.sys_block)
+    if array is None:
+        return mirror_result(job, mirror_add.resume(saved, ctx), power_cut=True)
+    fields = mirror_add.finish_btrfs(array, ctx)
+    return mirror_result(job, dict(fields, state='resumed' if fields['state'] == 'done' else fields['state']), True)
+
+
 def main(argv=None):
     import argparse
 
@@ -1459,7 +1520,7 @@ def main(argv=None):
     parser.add_argument('--config', action='append', required=True)
     parser.add_argument('--request')
     given = parser.parse_args(argv)
-    config = read_settings(given.config[-1])
+    config = read_settings(given.config[0])
     if given.action == 'run':
         return run_request(read_request(given.request), config, given.config)
     return (resume if given.action == 'resume' else finish)(config, given.config)

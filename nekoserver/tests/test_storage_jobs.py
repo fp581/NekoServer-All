@@ -326,5 +326,76 @@ class DriveTests(Jobs):
         self.assertIn('Move them first', self.result()['message'])
 
 
+class MirrorTests(Jobs):
+    """Job D is mirror_add.py's (T2): this file checks the disk and its words, then hands
+    it the one erase and the journal."""
+
+    def setUp(self):
+        super().setUp()
+        self.disk = disk('sdc', serial='S-AAAA', size=TB4)
+        self.handed = []
+        fake = mock.Mock()
+        fake.Context = lambda **named: named
+        fake.run_job = lambda request, ctx: (
+            self.handed.append(ctx)
+            or {
+                'state': 'done',
+                'message': 'The new drive is in the mirror.',
+                'advice': None,
+            }
+        )
+        for patch in (
+            mock.patch.dict(sys.modules, mirror_add=fake),
+            mock.patch.object(storage_jobs, 'world_now', lambda config: world(self.disk)),
+        ):
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def asked(self):
+        shown = storage_jobs.describe(dict(world(self.disk), named={}))[0]
+        return {k: shown[k] for k in ('by_id', 'serial', 'size_bytes')}
+
+    def test_the_mirror_job_gets_the_one_erase_after_the_words_of_the_disk(self):
+        self.assertEqual(self.run_job('mirror_add', array='md-md0', disk=self.asked(), confirm='4 tb aaaa'), 0)
+        self.assertIs(self.handed[0]['refused'], storage_jobs.Refused)
+        self.assertEqual(self.result()['state'], 'done')
+        self.assertIsNone(self.journal())
+
+    def test_other_words_erase_nothing(self):
+        self.assertEqual(self.run_job('mirror_add', array='md-md0', disk=self.asked(), confirm='4 TB'), 1)
+        self.assertEqual(self.handed, [])
+
+
+class UnitTests(unittest.TestCase):
+    FACTS = {
+        'unit': 'nekoserver-storage.service',
+        'resume': 'nekoserver-storage-resume.service',
+        'folder': '/run/nekoserver-control/storage',
+        'request': 'request.json',
+        'state': '/etc/nekoserver-backups/storage',
+        'journal': 'journal.json',
+    }
+
+    def test_the_job_runs_this_release_with_both_settings_and_the_resume_comes_before_docker(self):
+        from modules import dashboard
+
+        with mock.patch.dict(dashboard.SHARED, storage_jobs=self.FACTS):
+            units = dashboard.storage_units('/srv/nekoserver', '/home/neko/my-config.json')
+        bundle = f'/srv/nekoserver/installer/releases/v{dashboard.VERSION}'
+        job = units['nekoserver-storage.service']
+        self.assertIn(
+            f'ExecStart=/usr/bin/python3 -Es {bundle}/storage_jobs.py run --config {bundle}/config.json '
+            '--config "/home/neko/my-config.json" --request /run/nekoserver-control/storage/request.json\n',
+            job,
+        )
+        self.assertIn('TimeoutStartSec=infinity', job)
+        self.assertNotIn('[Install]', job)
+        resume = units['nekoserver-storage-resume.service']
+        self.assertIn('Before=docker.service\n', resume)
+        self.assertIn('ConditionPathExists=/etc/nekoserver-backups/storage/journal.json\n', resume)
+        self.assertIn('storage_jobs.py resume --config', resume)
+        self.assertIn('WantedBy=multi-user.target', resume)
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -312,6 +312,7 @@ def control_units(code, lighting, fans=True, data=None, proxyd=None, settings=No
         found.update(lighting_units(proxyd or socket_proxyd() or PROXYD_PLACES[0]))
     if data:
         found[MEDIA_FOLDERS] = media_folders_unit(data, settings)
+        found.update(storage_units(data, settings) if 'storage_jobs' in SHARED else {})
     return found
 
 
@@ -347,6 +348,39 @@ def media_folders_unit(data, settings=None):
         + f'ExecStart=/usr/bin/python3 -Es {bundle}/media_locations.py run --config {bundle}/config.json '
         + f'--request {request}{also}\n'
     )
+
+
+# The dashboard's Drives page (1.0.1, storage_jobs.py): its jobs run as root in this
+# one-off service, which the control service starts; a job a power cut stopped is undone
+# or finished by the second as the computer starts, before Docker.
+
+
+def storage_units(data, settings=None):
+    """The Drives page's two units: this release's storage_jobs.py, given the settings kept
+    with it and the file setup was run from (both written when a job changes them)."""
+    bundle = Path(data) / 'installer/releases' / ('v' + VERSION)
+    facts = SHARED['storage_jobs']
+    request = Path(facts['folder']) / facts['request']
+    settings = settings if isinstance(settings, (str, Path)) else None
+    plain = settings and not any(c in str(settings) for c in '"\\') and str(settings).isprintable()
+    configs = f'--config {bundle}/config.json' + (
+        ' --config ' + unit_word(settings) if plain and Path(settings) != bundle / 'config.json' else ''
+    )
+    run = f'ExecStart=/usr/bin/python3 -Es {bundle}/storage_jobs.py'
+    return {
+        facts['unit']: '[Unit]\nDescription=NekoServer change your drives (from the dashboard)\n'
+        + f'RequiresMountsFor={data}\nAfter=docker.service\n'
+        # A copy onto another drive takes as long as the files are big: never cut off.
+        + '[Service]\nType=oneshot\nUMask=0077\nTimeoutStartSec=infinity\n'
+        + f'{run} run {configs} --request {request}\n',
+        facts['resume']: '[Unit]\nDescription=NekoServer finish or undo a drives change a power cut stopped\n'
+        + f'RequiresMountsFor={data}\nAfter=local-fs.target nekoserver-mirror-start.service\n'
+        + 'Before=docker.service\nConditionPathExists='
+        + str(Path(facts['state']) / facts['journal'])
+        + '\n[Service]\nType=oneshot\nUMask=0077\nTimeoutStartSec=30min\n'
+        + f'{run} resume {configs}\n'
+        + '[Install]\nWantedBy=multi-user.target\n',
+    }
 
 
 def cards_paths(data):
@@ -928,6 +962,9 @@ def start_services(definitions, code, control, log, fans=True):
         systemctl('enable', '--now', unit)
     if started:
         start_control(started, log)
+    resume = SHARED.get('storage_jobs', {}).get('resume')
+    if resume in definitions:
+        systemctl('enable', resume)
     systemctl('restart', SERVICE)
     # Fan control switched off: the restart handed every fan back (or the service keeps
     # trying, at full speed meanwhile). Setup says so instead of carrying on. The service
