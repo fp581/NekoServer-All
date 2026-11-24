@@ -193,8 +193,9 @@ class CollectorPlacesTests(unittest.TestCase):
             before = dashboard.collector_settings(cfg, 1800)
             before.pop('locations')  # as 1.0.0 wrote it
             target.write_text(json.dumps(before))
-            with mock.patch.object(dashboard, 'refresh_public_host', lambda cfg, log: False):
+            with mock.patch.object(dashboard, 'refresh_public_host', return_value=False) as public:
                 self.assertTrue(dashboard.refresh(cfg, lambda line: None, target))
+            public.assert_called_once()
             self.assertEqual(json.loads(target.read_text())['locations']['photos'], 'media')
 
 
