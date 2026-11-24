@@ -219,7 +219,9 @@ class StoppedTests(Marked):
         with mock.patch.object(migrate, 'copy', side_effect=OSError('No space left on device')):
             self.assertEqual(self.run_job('move', kind='photos', to='media'), 1)
         self.assertEqual(self.last_result()['state'], 'failed')
-        self.assertEqual(self.last_result()['message'], 'The job stopped: No space left on device. Nothing was changed.')
+        self.assertEqual(
+            self.last_result()['message'], 'The job stopped: No space left on device. Nothing was changed.'
+        )
         self.assertIsNone(self.saved_journal())
         self.assertEqual(self.started, [None])
 
