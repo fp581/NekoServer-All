@@ -174,9 +174,12 @@ def generate(app):
     username = 'neko_' + secrets.token_hex(6)
     if app in EMAIL_LOGINS:
         username += '@server.invalid'
-    alphabet = string.ascii_letters + string.digits + '-_'
+    first = string.ascii_letters + string.digits
+    alphabet = first + '-_'
     while True:
-        password = ''.join(secrets.choice(alphabet) for _ in range(32))
+        # Never '-' or '_' first: a command line reads a value starting with '-' as an
+        # option (Nextcloud's install stopped on one, T1-R12).
+        password = secrets.choice(first) + ''.join(secrets.choice(alphabet) for _ in range(31))
         if all(
             any(ch in group for ch in password)
             for group in (string.ascii_lowercase, string.ascii_uppercase, string.digits)
