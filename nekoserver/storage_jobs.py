@@ -13,8 +13,10 @@ way a disk is erased (`erase`): the mirror's rebuild (mirror_add.py) uses both, 
 other code writes a partition table or a filesystem."""
 
 import json
+import re
 import os
 import sqlite3
+import time
 from pathlib import Path
 
 from neko_common import SHARED
@@ -428,7 +430,7 @@ def erase(
     import uuid as uuids
 
     config = config or {}
-    minimum = SHARED['storage_jobs']['min_bytes'] if minimum_bytes is None else minimum_bytes
+    minimum = FACTS['min_bytes'] if minimum_bytes is None else minimum_bytes
     tell = journal or (lambda fields: None)
 
     def checked():
@@ -480,3 +482,266 @@ def mirror_layout(by_id, disk, like, checked, tell, folder):
         stdin=member_table(f'/dev/{shown["pkname"]}'),
     )
     return partition_path(by_id, number, folder)
+
+
+# ---- the kinds of data and their places --------------------------------------------------
+
+FACTS = SHARED.get('storage_jobs', {})
+FORMAT = 'neko-storage-v1'
+STATE = Path(FACTS.get('state', '/etc/nekoserver-backups/storage'))
+KINDS = ('backups', 'photos', 'movies', 'music', 'cloud')
+KIND_WORDS = {
+    'backups': 'backups',
+    'photos': 'photos',
+    'movies': 'films and shows',
+    'music': 'music',
+    'cloud': 'Nextcloud files',
+}
+PLACE_WORDS = {'ssd': 'Apps drive', 'media': 'Media and backups drive'}
+# Room left free on the new drive beyond what is moved (as migrate.MARGIN).
+MARGIN = 1.05
+OLD_COPY = re.compile(r'nekoserver-old-(backups|photos|movies|music|cloud)-([0-9a-f]{16})')
+
+
+def place_words(place):
+    return PLACE_WORDS.get(place) or f'Extra drive {place}'
+
+
+def place_of(config, kind):
+    """Where a kind of data is: "ssd", "media" or an extra drive's name."""
+    from neko_common import location
+
+    if kind == 'backups':
+        return (config.get('locations') or {}).get('backups', 'media')
+    return location(config, kind)
+
+
+def kind_folders(kind):
+    """The folders of a kind, as folders of the drive it is on."""
+    from placement import BACKUP, DATA_FOLDERS
+
+    return tuple(DATA_FOLDERS[BACKUP if kind == 'backups' else kind])
+
+
+def places(config):
+    from neko_common import extra_drives
+
+    return ['ssd', 'media', *sorted(extra_drives(config))]
+
+
+def root_of(config, place):
+    from neko_common import drive_folder
+
+    return Path(drive_folder(config, place))
+
+
+def du(paths):
+    """Bytes the folders hold (one filesystem each; a missing folder holds nothing)."""
+    import subprocess
+
+    there = [str(p) for p in paths if Path(p).exists()]
+    if not there:
+        return 0
+    shown = subprocess.run(['du', '-s', '-b', '-x', '-c', *there], capture_output=True, text=True, check=False)
+    lines = shown.stdout.strip().splitlines()
+    return int(lines[-1].split()[0]) if lines else 0
+
+
+def free_bytes(folder):
+    found = os.statvfs(folder)
+    return found.f_bavail * found.f_frsize
+
+
+def same_drive(a, b):
+    try:
+        return os.stat(a).st_dev == os.stat(b).st_dev
+    except OSError:
+        return False
+
+
+def target_problem(config, kind, to, size):
+    """Why `kind` (holding `size` bytes) can't move to the place `to`, or None."""
+    root = root_of(config, to)
+    if kind == 'backups' and to == 'ssd':
+        return 'Your backups are copies of the Apps drive: they must be on another drive.'
+    if not root.is_dir():
+        return f'{place_words(to)} is not connected.'
+    if same_drive(root, root_of(config, place_of(config, kind))):
+        return f'It is the drive your {KIND_WORDS[kind]} are on already.'
+    need, free = int(size * MARGIN), free_bytes(root)
+    if free < need:
+        return f'Not enough room: needs {size_words(need)}, {size_words(free)} free.'
+    return None
+
+
+def targets(config, kind, size):
+    found = []
+    for to in places(config):
+        if to == place_of(config, kind):
+            continue
+        why = target_problem(config, kind, to, size)
+        found.append({'to': to, 'words': place_words(to), 'ok': why is None, 'why_not': why})
+    return found
+
+
+def old_copies(config, measure=du):
+    """The copies a move left behind, on every drive: one folder each."""
+    found = []
+    for place in places(config):
+        try:
+            entries = sorted(root_of(config, place).iterdir())
+        except OSError:
+            continue
+        for entry in entries:
+            matched = OLD_COPY.fullmatch(entry.name)
+            if not matched or entry.is_symlink() or not entry.is_dir():
+                continue
+            kind, copy = matched.groups()
+            found.append(
+                {
+                    'kind': kind,
+                    'copy': copy,
+                    'place': place,
+                    'place_words': place_words(place),
+                    'path': str(entry),
+                    'bytes': measure([entry]),
+                    'at': entry.stat().st_mtime,
+                    'delete_words': f'delete {KIND_WORDS[kind]}',
+                }
+            )
+    return found
+
+
+def release_problem(config, drive, copies):
+    """Why the extra drive `drive` can't be given up now, or None."""
+    from neko_common import INSTALL_SECTION
+
+    for kind in KINDS:
+        if place_of(config, kind) == drive:
+            return f'Your {KIND_WORDS[kind]} are on it. Move them first.'
+    if drive in (config.get(INSTALL_SECTION) or {}).values():
+        return 'Apps keep their settings on it. Move them in setup first.'
+    if any(c['place'] == drive for c in copies):
+        return 'An old copy is on it. Delete it or move it back first.'
+    return None
+
+
+# ---- the files the page reads --------------------------------------------------------------
+
+
+def write_state(name, payload, folder=None):
+    from neko_common import atomic_json, ensure_directory
+
+    folder = Path(folder or STATE)
+    ensure_directory(folder, 0o700)
+    atomic_json(folder / name, {'format': FORMAT, **payload})
+
+
+def read_state(name, folder=None):
+    from neko_common import read_journal
+
+    return read_journal(Path(folder or STATE) / name, FORMAT)
+
+
+def on_it(disk):
+    """What is on a disk, in a few words: '2 partitions: NTFS "Photos" (1.2 TB used), unknown 16 MB'."""
+    shown = []
+    for found in disk['filesystems']:
+        words = found['fstype'].upper() if found['fstype'] in ('ntfs', 'exfat', 'vfat') else found['fstype']
+        if found.get('label'):
+            words += f' "{found["label"]}"'
+        if found.get('fsused'):
+            words += f' ({size_words(found["fsused"])} used)'
+        shown.append(words)
+    if not disk['partitions'] and not shown:
+        return 'Nothing: the disk is blank.'
+    count = disk['partitions']
+    head = f'{count} partition{"" if count == 1 else "s"}: ' if count else ''
+    return head + (', '.join(shown) or 'no filesystem NekoServer can read')
+
+
+def taken_over(disk):
+    """The one filesystem a disk may be taken over with as it is (ext4, XFS or Btrfs, small
+    partitions such as an EFI or reserved one aside), or None: then it can only be erased."""
+    useful = [f for f in disk['filesystems'] if f['fstype'] in FILESYSTEMS]
+    others = [f for f in disk['filesystems'] if f['fstype'] not in FILESYSTEMS]
+    if len(useful) == 1 and all(int(f.get('size') or 0) <= 2**30 for f in others):
+        return useful[0]
+    return None
+
+
+def extra_drive_of(config, disk):
+    """The extra drive (d3...) a disk is, by the UUIDs on it, or None."""
+    from neko_common import extra_drives
+
+    uuids = {f.get('uuid') for f in disk['filesystems']}
+    return next((name for name, record in sorted(extra_drives(config).items()) if record.get('uuid') in uuids), None)
+
+
+def disk_entry(config, disk, minimum, copies):
+    why = refusal(disk, minimum)
+    fs = taken_over(disk)
+    drive = extra_drive_of(config, disk)
+    problem = release_problem(config, drive, copies) if drive else None
+    return {
+        'by_id': disk['by_id'],
+        'serial': disk['serial'],
+        'size_bytes': disk['size_bytes'],
+        'model': disk['model'],
+        'dev': disk['dev'],
+        'offer': None if why else ('take_over' if fs else 'erase'),
+        'refused': why,
+        'confirm_words': confirm_words(disk) if disk['serial'] else None,
+        'on_it': on_it(disk),
+        'fs': fs
+        and {'type': fs['fstype'], 'label': fs.get('label'), 'uuid': fs.get('uuid'), 'used_bytes': fs.get('fsused')},
+        'drive': drive,
+        'can_release': bool(drive) and problem is None,
+        'why_not': problem,
+    }
+
+
+def degraded_arrays(sys_block=SYS_BLOCK):
+    """{"md-<name>": the size each member needs, in bytes} of every md array that lost a
+    drive and is not rebuilding."""
+    found = {}
+    for md in sorted(Path(sys_block).glob('md*/md')):
+        try:
+            degraded = int((md / 'degraded').read_text().strip() or 0)
+            action = (md / 'sync_action').read_text().strip()
+            size = int((md / 'component_size').read_text().strip()) * 1024
+        except (OSError, ValueError):
+            continue
+        if degraded and action == 'idle':
+            found[f'md-{md.parent.name}'] = size
+    return found
+
+
+def look(config, world=None, measure=du, arrays=None):
+    """look.json: every disk with its offer or refusal, each kind's size, where it may go,
+    the old copies, and the disks each array that lost a drive may take."""
+    world = dict(world or world_now(config), named=settings_uuids(config))
+    disks = describe(world)
+    copies = old_copies(config, measure)
+    sizes, kinds_targets = {}, {}
+    for kind in KINDS:
+        root = root_of(config, place_of(config, kind))
+        size = measure([root / folder for folder in kind_folders(kind)])
+        sizes[kind] = {'bytes': size, 'at': time.time()}
+        kinds_targets[kind] = targets(config, kind, size)
+    mirrors = {
+        array: [
+            {'by_id': d['by_id'], 'ok': refusal(d, size) is None, 'words': (refusal(d, size) or {}).get('words')}
+            for d in disks
+        ]
+        for array, size in (degraded_arrays() if arrays is None else arrays).items()
+    }
+    minimum = FACTS['min_bytes']
+    return {
+        'at': time.time(),
+        'disks': [disk_entry(config, d, minimum, copies) for d in disks],
+        'mirror_offers': mirrors,
+        'sizes': sizes,
+        'targets': kinds_targets,
+        'old_copies': copies,
+    }
