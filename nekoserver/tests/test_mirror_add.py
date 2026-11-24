@@ -8,6 +8,7 @@ point, here a stand-in that notes what it was asked."""
 import os
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -199,6 +200,36 @@ class Md(unittest.TestCase):
         self.assertIn('nothing was changed in it', result['message'])
         self.assertIn('add new device failed', result['advice'])
         self.assertEqual(stand.cleared, 1)
+
+    def test_names_and_counts_are_read_in_one_pass(self):
+        """Sonar S8786: no backtracking pattern on what /sys or Btrfs says."""
+        for kname, disk in (
+            ('sdb1', 'sdb'),
+            ('sdb', 'sdb'),
+            ('nvme0n1p2', 'nvme0n1'),
+            ('mmcblk0p1', 'mmcblk0'),
+            ('sdp1', 'sdp'),
+            ('vdb12', 'vdb'),
+        ):
+            self.assertEqual(mirror_add.disk_of(kname), disk, kname)
+        for said, done in (
+            ('45.5% done, 0 write errs\n', 45.5),
+            ('Started on 1.Dec, 100.0% done\n', 100.0),
+            ('Never started\n', None),
+            ('..% done', None),
+        ):
+            self.assertEqual(mirror_add.percent_done(said), done, said)
+        self.assertEqual(
+            mirror_add.read_errors('Started on 1.Dec, finished on 1.Dec, 2 write errs, 3 uncorr. read errs'), 5
+        )
+        self.assertEqual(mirror_add.read_errors('Never started'), 0)
+        # A long line that a backtracking pattern takes ages over is read at once.
+        long = '1' * 200_000 + 'x'
+        started = time.monotonic()
+        self.assertEqual(mirror_add.disk_of(long), long)
+        self.assertIsNone(mirror_add.percent_done('9.' * 100_000 + '% don'))
+        self.assertEqual(mirror_add.read_errors('1 ' * 100_000), 0)
+        self.assertLess(time.monotonic() - started, 1.0)
 
     def test_a_new_drive_without_a_stable_name_is_not_added(self):
         """Resume could not find it again, so it would undo a good add: stop before the add."""

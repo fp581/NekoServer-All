@@ -92,9 +92,35 @@ def md_members(md):
     return members
 
 
+def disk_of(kname):
+    """The disk a partition's kernel name belongs to: sdb1 → sdb, nvme0n1p2 → nvme0n1,
+    mmcblk0p1 → mmcblk0 (the "p" only after a digit, so sdp1 → sdp). Plain string steps, no
+    regular expression: a name read from /sys never costs more than one pass."""
+    base = kname.rstrip('0123456789')
+    if base == kname:
+        return kname
+    if base.endswith('p') and base[-2:-1].isdigit():
+        return base[:-1]
+    return base
+
+
+def percent_done(said):
+    """The x of "x% done" in a replace status, or None."""
+    end = said.find('% done')
+    if end < 0:
+        return None
+    start = end
+    while start > 0 and (said[start - 1].isdigit() or said[start - 1] == '.'):
+        start -= 1
+    try:
+        return float(said[start:end])
+    except ValueError:
+        return None
+
+
 def md_need(sys_block, md, kname, offset, component):
     """The bytes a new member needs, laid out like the member `kname`."""
-    partition = Path(sys_block) / re.sub(r'p?\d+$', '', kname) / kname
+    partition = Path(sys_block) / disk_of(kname) / kname
     start = number(partition / 'start') if partition.is_dir() else None
     if start is not None:
         # A partition: the new drive gets one of the same size at the same place.
@@ -307,11 +333,11 @@ def wait_replace(array, ctx):
     never = 0
     while True:
         rc, said = ctx.run(['btrfs', 'replace', 'status', '-1', array['mount']], timeout=STATUS_LIMIT)
-        done = re.search(r'([\d.]+)% done', said)
+        done = percent_done(said)
         if rc != 0:
             return 'lost', said
-        if done:
-            ctx.progress('rebuild', percent=float(done[1]))
+        if done is not None:
+            ctx.progress('rebuild', percent=done)
         elif 'finished' in said.lower():
             return 'finished', said
         elif 'never started' in said.lower() and never < NEVER_LOOKS:
@@ -323,8 +349,13 @@ def wait_replace(array, ctx):
 
 def read_errors(said):
     """The uncorrectable read and write errors a finished replace reports (0 when not said)."""
-    found = re.search(r'(\d+) write errs?, (\d+) uncorr\. read errs?', said)
-    return int(found[1]) + int(found[2]) if found else 0
+    errors = 0
+    for part in said.split(','):
+        words = part.split()
+        # ", N write errs, M uncorr. read errs" (plain string steps, no regular expression)
+        if len(words) >= 2 and words[0].isdigit() and words[1] in ('write', 'uncorr.'):
+            errors += int(words[0])
+    return errors
 
 
 def healed(array, member, ctx):
