@@ -172,8 +172,7 @@ def describe(world):
     disk_type = 'loop' if testing() else 'disk'
     counts = {}
     for disk in world['lsblk']:
-        key = ((disk.get('serial') or '').strip() or loop_serial(disk), (disk.get('model') or '').strip())
-        counts[key] = counts.get(key, 0) + 1
+        counts[identity(disk)] = counts.get(identity(disk), 0) + 1
     rows = []
     for disk in world['lsblk']:
         if disk.get('type') != disk_type:
@@ -192,20 +191,34 @@ def loop_serial(disk, sys_block=SYS_BLOCK):
         return ''
 
 
+def identity(disk):
+    """(serial, model): what tells one disk from another."""
+    return serial_of(disk), (disk.get('model') or '').strip()
+
+
+def serial_of(disk):
+    return (disk.get('serial') or '').strip() or loop_serial(disk)
+
+
+def in_use(everything, world):
+    """Whether any of these devices is mounted (in any namespace) or used as swap."""
+    mounted = any(r.get('maj:min') in world['mounted'] or any(r.get('mountpoints') or []) for r in everything)
+    swap = any(os.path.realpath(r['path']) in world['swaps'] for r in everything if r.get('path'))
+    return mounted, swap
+
+
 def disk_row(disk, world, counts):
     kname = disk.get('kname') or disk.get('name')
-    names = world['by_id'].get(kname, [])
-    by_id = preferred(names)
+    by_id = preferred(world['by_id'].get(kname, []))
     parts = [row for row, _ in walk(disk.get('children') or [])]
     everything = [disk, *parts]
+    mounted, swap = in_use(everything, world)
     return {
         'by_id': by_id,
         # Two disks with one serial (some USB cases say the same for every disk) would share
         # their by-id name: neither can be told apart, so neither is offered.
-        'unique': bool(by_id)
-        and counts.get(((disk.get('serial') or '').strip() or loop_serial(disk), (disk.get('model') or '').strip()))
-        == 1,
-        'serial': (disk.get('serial') or '').strip() or loop_serial(disk),
+        'unique': bool(by_id) and counts.get(identity(disk)) == 1,
+        'serial': serial_of(disk),
         'size_bytes': int(disk.get('size') or 0),
         'model': (disk.get('model') or '').strip(),
         'dev': kname,
@@ -215,9 +228,8 @@ def disk_row(disk, world, counts):
         'named': sorted({world['named'][r['uuid']] for r in everything if r.get('uuid') in world['named']}),
         'signatures': sorted({r['fstype'] for r in everything if r.get('fstype') in SET_SIGNATURES}),
         'holders': sorted({h for r in everything for h in holders_of(world, r.get('kname') or r.get('name') or '')}),
-        'mounted': any(r.get('maj:min') in world['mounted'] for r in everything)
-        or any(m for r in everything for m in (r.get('mountpoints') or [])),
-        'swap': any(os.path.realpath(r.get('path') or '') in world['swaps'] for r in everything if r.get('path')),
+        'mounted': mounted,
+        'swap': swap,
         'filesystems': [
             {k: r.get(k) for k in ('path', 'fstype', 'label', 'uuid', 'partuuid', 'size', 'fsused')}
             for r in everything
