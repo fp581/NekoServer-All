@@ -6741,11 +6741,16 @@ function oldCopyRow(k, busy, signed) {
 /* Where a kind is, as its card says it: [state, label, words or null]. A kind backed up on
  * the drive it is on says so, in the backups page's words (storage_jobs.py beside_now). */
 const SAME_DRIVE_WORDS =
-  'Its backup is on the same drive: it protects against a mistake, not against losing that drive. Only the weekly copy on the USB drive is on another drive.';
+  'Its backup is on the same drive: it protects against a mistake, not against losing that drive.';
+// The weekly USB copy holds the photos, not the music (backup_plan.offline_row).
+const SAME_DRIVE_LAST = {
+  photos: ' Only the weekly copy on the USB drive is on another drive.',
+  music: ' Music is not in the weekly USB copy.'
+};
 function kindPlace(k) {
   const where = text(k.place_words, 'Not known');
   return k.same_drive === true
-    ? ['warning', where + ' · same drive as its backup', SAME_DRIVE_WORDS]
+    ? ['warning', where + ' · same drive as its backup', SAME_DRIVE_WORDS + (SAME_DRIVE_LAST[k.kind] || '')]
     : ['pass', where, null];
 }
 /* A move that backs a kind up on its own drive needs its own tick (storage_jobs.py). */
