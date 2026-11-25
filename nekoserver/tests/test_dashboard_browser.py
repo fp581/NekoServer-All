@@ -414,9 +414,9 @@ class DrivesInBrowserTests(unittest.TestCase):
                     self.assertEqual(answer['errors'], [])
                     self.assertEqual(answer['wide'], [], 'nothing wider than the phone')
                     photos, music = answer['cards']
-                    self.assertEqual(photos['badge'], 'Media and backups drive · same drive as its backup')
+                    self.assertEqual(photos['badge'], 'Media and backups drive')
                     self.assertIn(
-                        'Its backup is on the same drive: it protects against a mistake, not against losing '
+                        'Same drive as its backup: that backup protects against a mistake, not against losing '
                         'that drive. Only the weekly copy on the USB drive is on another drive.',
                         photos['hints'],
                     )
@@ -484,7 +484,7 @@ class DrivesStuckInBrowserTests(DrivesInBrowserTests):
                         shown['needs'], ['Media and backups drive: connected', 'Extra drive d3: not connected']
                     )
                     self.assertEqual(shown['buttons'], [['Try again', True], ['Give it up', False]])
-                    self.assertFalse(shown['wide'])
+                    self.assertFalse(shown['wide'], shown['out'])
                     self.assertEqual(answer['dialog'], {'typed': False, 'focused': 'drive-pin', 'wide': False})
                     sent = [r for r in self.control.asked if r.get('op') == 'app_data_give_up']
                     self.assertEqual(len(sent), 1, self.control.asked)

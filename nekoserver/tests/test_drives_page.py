@@ -111,7 +111,9 @@ class DrivesPageTests(unittest.TestCase):
             ('kindPlace', {}),
             ('kindPlace', {'kind': 'music', 'place_words': 'Extra drive d3', 'same_drive': True}),
         )
-        self.assertEqual(said[0][:2], ['warning', 'Extra drive d3 · same drive as its backup'])
+        # The badge names the drive only (a badge does not wrap: it ran past a phone's edge).
+        self.assertEqual(said[0][:2], ['warning', 'Extra drive d3'])
+        self.assertTrue(said[0][2].startswith('Same drive as its backup: '), said[0][2])
         self.assertIn('not against losing that drive', said[0][2])
         self.assertIn('weekly copy on the USB drive is on another drive', said[0][2])
         self.assertEqual(said[1], ['pass', 'Extra drive d3', None])

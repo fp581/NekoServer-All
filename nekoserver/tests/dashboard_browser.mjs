@@ -110,13 +110,17 @@ const CHECKS = {
   async drivesBeside(browser, { width, look }) {
     const page = await open(browser, 'drives', width, [], look);
     await page.waitForSelector('.drive-kind button');
+    // What sticks out past the window's right edge (the deepest ones), named.
     const fits = () =>
       page.evaluate(() => {
-        const dialog = document.getElementById('dialog');
-        const wide = [document.documentElement, ...(dialog.open ? [dialog] : [])].filter(
-          n => n.scrollWidth > n.clientWidth + 1
+        const edge = document.documentElement.clientWidth + 1;
+        const out = [...document.querySelectorAll('body *')].filter(
+          n => n.getClientRects().length && n.getBoundingClientRect().right > edge
         );
-        return wide.map(n => n.id || n.tagName);
+        return out
+          .filter(n => !out.some(o => o !== n && n.contains(o)))
+          .map(n => n.tagName.toLowerCase() + (n.className ? '.' + String(n.className).split(' ').join('.') : ''))
+          .slice(0, 6);
       });
     const cards = await page.evaluate(() =>
       [...document.querySelectorAll('.drive-kind')].map(c => ({
@@ -152,7 +156,13 @@ const CHECKS = {
       title: document.querySelector('.media-outcome .badge').textContent.trim(),
       needs: [...document.querySelectorAll('.drive-needs li')].map(li => li.textContent),
       buttons: [...document.querySelectorAll('.media-outcome button')].map(b => [b.textContent, b.disabled]),
-      wide: document.documentElement.scrollWidth > document.documentElement.clientWidth + 1
+      wide: document.documentElement.scrollWidth > document.documentElement.clientWidth + 1,
+      out: [...document.querySelectorAll('body *')]
+        .filter(
+          n => n.getClientRects().length && n.getBoundingClientRect().right > document.documentElement.clientWidth + 1
+        )
+        .map(n => n.tagName.toLowerCase() + '.' + String(n.className).split(' ').join('.'))
+        .slice(-6)
     }));
     await page.click('.media-outcome button:text-is("Give it up")');
     await page.waitForSelector('#drive-pin');
