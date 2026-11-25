@@ -899,6 +899,10 @@ class Job:
         return (read_state(JOURNAL, self.state) or {}).get('undo', {})
 
     def result(self, state, message, advice=None, power_cut=False):
+        if state != 'working':
+            # What the result says is on the drives before it is said (T1-14: a delete said
+            # "done" and the old copy was back after a power cut a second later).
+            sync_drives(*job_drives(self))
         write_state(
             RESULT,
             {
@@ -942,6 +946,49 @@ class Job:
         if saved.get('committed') and change:
             apply_change(self.config, change)
             self.save_settings()
+
+
+def sync_drives(*folders):
+    """Every write on the filesystems these folders are on put on the disk: Linux keeps
+    writes in memory for a while, and a power cut drops what it kept, so a step that counts
+    on them (a commit point, a "done") comes after this (T1-14: a move's copy and rename on
+    the new drive were lost while the settings, written and fsynced, said the switch).
+    syncfs, once per filesystem; sync() where the C library has no syncfs."""
+    import ctypes
+
+    try:
+        syncfs = ctypes.CDLL(None, use_errno=True).syncfs
+    except (OSError, AttributeError):
+        syncfs = None
+    seen = set()
+    for folder in folders:
+        try:
+            fd = os.open(str(folder), os.O_RDONLY | os.O_DIRECTORY)
+        except (OSError, TypeError):
+            continue
+        try:
+            device = os.fstat(fd).st_dev
+            if device not in seen:
+                seen.add(device)
+                if syncfs is None or syncfs(fd) != 0:
+                    os.sync()
+        finally:
+            os.close(fd)
+
+
+def job_drives(job):
+    """The folders of the drives a job wrote on (its journal says which)."""
+    undo = job.undo()
+    found = []
+    for place in (undo.get('here'), undo.get('to')):
+        if place:
+            try:
+                found.append(root_of(job.config, place))
+            except RuntimeError:
+                pass
+    if undo.get('deleting'):
+        found.append(Path(undo['deleting']).parent)
+    return found
 
 
 def apply_change(config, change):
@@ -1216,7 +1263,9 @@ def switch_data(job, kind, here, to, sources, staged, size):
             out=job.out, note=lambda units: job.journal('stop', False, stopped=units), own=left_alone()
         )
         copy_all(job, sources, staged, size, final=True)
-        job.journal('compare', False)
+        # How many files each new folder holds: a resume after the switch checks they are
+        # there before it finishes (T1-14).
+        job.journal('compare', False, copied=[file_count(folder) for folder in staged])
         job.progress('compare')
         for source, target in zip(sources, staged):
             if source.exists() and migrate.differences(source, target):
@@ -1247,6 +1296,8 @@ def put_in_place(job, kind, here, to, staged):
         if copy_.exists():
             parents_like(target, root_of(job.config, here), root_of(job.config, to))
             os.rename(copy_, target)
+    # The copy and its new names on the disk before the settings say them (T1-14).
+    sync_drives(root_of(job.config, to), root_of(job.config, here))
     was = (job.config.get('locations') or {}).get(kind)
     job.commit('switch', [['locations', kind, None if kind == 'backups' and to == 'media' else to]], was=was)
 
@@ -1305,9 +1356,102 @@ def retire_old(job, kind, here):
             os.rename(folder, old / rel)
     staging = Path(job.undo().get('staging', ''))
     if staging.name.startswith('nekoserver-new-') and staging.is_dir():
-        import shutil
+        # Only its empty folders: what is still in it was never put in place, and may be the
+        # only copy (T1-14: a lost rename left the files there, and they were deleted).
+        if not remove_empty(staging):
+            job.out(f'{staging} still holds files, so it is kept.')
 
-        shutil.rmtree(staging)
+
+def remove_empty(folder):
+    """The empty folders in `folder`, and it, taken away; True when it is gone."""
+    for left in sorted(
+        (p for p in folder.rglob('*') if p.is_dir() and not p.is_symlink()), key=lambda p: -len(p.parts)
+    ):
+        if not any(left.iterdir()):
+            left.rmdir()
+    if any(folder.iterdir()):
+        return False
+    folder.rmdir()
+    return True
+
+
+def file_count(folder):
+    """The files (anything but a folder) in a folder and below it, links not followed; 0
+    for a folder that is not there."""
+    total = 0
+    for top, folders, files in os.walk(folder, followlinks=False):
+        total += len(files) + sum(1 for name in folders if os.path.islink(os.path.join(top, name)))
+    return total
+
+
+def switch_lost(job, saved):
+    """Whether the new place of a committed move or "back" lost what was put there (a
+    power cut before the drive had it, T1-14): a new folder with fewer files than were
+    copied into it while nothing has run since (phase "switch"), or an empty one while the
+    old place has files."""
+    undo = saved.get('undo') or {}
+    kind, here, to = job.request.get('kind'), undo.get('here'), undo.get('to')
+    if saved.get('phase') not in ('switch', 'start') or not (kind and here and to):
+        return False
+    copied = undo.get('copied') or []
+    old = root_of(job.config, here) / OLD_NAME.format(kind=kind, id=job.id)
+    for n, (was, now, rel) in enumerate(
+        zip(paths(job.config, kind, here), paths(job.config, kind, to), kind_folders(kind))
+    ):
+        there = file_count(now)
+        if saved.get('phase') == 'switch' and n < len(copied) and there < copied[n]:
+            return True
+        if there == 0 and max(file_count(was), file_count(old / rel)) > 0:
+            return True
+    return False
+
+
+def undo_lost_switch(job, kind, here):
+    """A switch the power cut lost undone from the old place, which still has everything
+    (it is retired only after the new place is on the disk): the settings name it again,
+    folders retired early (the backups') given back, whatever is left at the new place moved
+    out of the apps' way (a "back" gives its old copy its name again). Never copies the new
+    place over the old one (an unswitch does: here the new place is the one that lost
+    files). Done again from the start until it ends (lost_undone)."""
+    to = job.undo()['to']
+    if not job.undo().get('lost_undone'):
+        job.journal('lost', True, change=[['locations', kind, job.undo().get('was')]])
+        if kind == 'backups' and to != 'media':
+            forward = json.loads(json.dumps(job.config))
+            apply_change(forward, [['locations', kind, to]])
+            unbind_backups(forward)
+        unretire(job, kind, here)
+        apply_change(job.config, job.undo()['change'])
+        job.save_settings()
+        undo_move(job)
+        sync_drives(root_of(job.config, here), root_of(job.config, to))
+        job.journal('lost', True, lost_undone=True)
+
+
+LOST_WORDS = (
+    'The power went off just as your {kind} were being switched to {to}, and the copy there did not survive it. '
+    'They stay on {here}, as before. Nothing was changed.'
+)
+
+
+def finish_lost(job, kind, here):
+    """After Docker: the undone switch's apps on the old place again (setup), then Stop."""
+    import migrate
+
+    undo_lost_switch(job, kind, here)
+    stopped = migrate.stop_writers(out=job.out, note=lambda units: None, own=left_alone())
+    also = ''
+    try:
+        setup_again(job)
+    except Exception as error:  # noqa: BLE001
+        # Said; the files and the settings are as before the move.
+        also = f' Setup, run again for {place_words(here)}, stopped: {error}'
+    finally:
+        migrate.start_again(stopped, job.out)
+    raise Stop(
+        LOST_WORDS.format(kind=KIND_WORDS[kind], to=place_words(job.undo()['to']), here=place_words(here)) + also,
+        'Move them again from the Drives page.',
+    )
 
 
 def finish_move(job, kind, here, stopped):
@@ -1320,6 +1464,7 @@ def finish_move(job, kind, here, stopped):
     try:
         if kind == 'backups':
             # Setup never mounts the backups' new place over files at the old one.
+            sync_drives(root_of(job.config, job.undo()['to']))
             retire_old(job, kind, here)
         setup_again(job)
     except Exception as error:  # noqa: BLE001
@@ -1328,6 +1473,8 @@ def finish_move(job, kind, here, stopped):
             unswitch(job, kind, here, stopped, error)
         other = error
     try:
+        # What the apps have at the new place on the disk before the old one is retired.
+        sync_drives(root_of(job.config, job.undo()['to']))
         retire_old(job, kind, here)
     finally:
         migrate.start_again(stopped, job.out)
@@ -1479,9 +1626,11 @@ def unswitch_files(job, kind, here):
         if new.is_dir() and not os.path.ismount(new):
             old.mkdir(parents=True, exist_ok=True)
             migrate.copy(new, old, final=True, out=job.out)
+    sync_drives(root_of(job.config, here))
     apply_change(job.config, job.undo()['change'])
     job.save_settings()
     undo_move(job)
+    sync_drives(root_of(job.config, here), root_of(job.config, to))
     job.journal('unswitch', True, files_back=True)
 
 
@@ -1506,7 +1655,7 @@ def undo_move(job):
     import shutil
 
     journal = read_state(JOURNAL, job.state) or {}
-    saved, switching = journal.get('undo', {}), journal.get('phase') in ('switch', 'unswitch')
+    saved, switching = journal.get('undo', {}), journal.get('phase') in ('switch', 'unswitch', 'lost')
     staging = Path(saved.get('staging', ''))
     kind, to, here = job.request['kind'], saved.get('to'), saved.get('here')
     if to and switching:
@@ -1649,7 +1798,7 @@ def stopped_state(saved):
     """A job that ended with Stop: done after its commit point; failed before it changed
     anything (no journal yet, or still copying) or when setup refused the new place and
     the move was undone (unswitch); undone when it put things back."""
-    if saved.get('phase') == 'unswitch':
+    if saved.get('phase') in ('unswitch', 'lost'):
         return 'failed'
     if saved.get('committed'):
         return 'done'
@@ -1716,6 +1865,10 @@ def resume(config, settings_files, state=None, folder=None, out=print):
         job.result('undone', UNDONE_WORDS.get(job.action, UNDONE_WORDS['move']), power_cut=True)
         job.done()
         return 0
+    if job.action in ('move', 'back') and (saved.get('phase') == 'lost' or switch_lost(job, saved)):
+        # Before Docker, so no app starts on the new place that lost its files (T1-14).
+        undo_lost_switch(job, job.request['kind'], saved['undo']['here'])
+        saved = read_state(JOURNAL, job.state) or saved
     job.reapply(read_state(JOURNAL, job.state) or saved)
     if saved.get('phase') == 'unswitch' and job.action in ('move', 'back') and not saved['undo'].get('files_back'):
         unswitch_files(job, job.request['kind'], saved['undo']['here'])
@@ -1824,6 +1977,8 @@ def finish_cut_move(job, saved):
     import migrate
 
     kind, here = job.request.get('kind'), saved['undo']['here']
+    if saved.get('phase') == 'lost' or switch_lost(job, saved):
+        finish_lost(job, kind, here)
     if saved.get('phase') == 'unswitch':
         unswitch(job, kind, here, saved['undo'].get('stopped'), saved['undo'].get('why', ''))
     stopped = migrate.stop_writers(
