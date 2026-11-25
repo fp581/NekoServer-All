@@ -128,10 +128,9 @@ class DurabilityTests(Jobs):
         self.assertEqual([at for at in ledger.lost if at[0].startswith('result')], [])
 
     def test_the_drives_are_synced_for_real_once_per_filesystem(self):
-        calls = []
-        with mock.patch.object(storage_jobs.os, 'sync', lambda: calls.append('sync')):
+        with mock.patch.object(storage_jobs.os, 'sync', return_value=None) as sync:
             storage_jobs.sync_drives(self.root / 'ssd', self.root / 'media', self.root / 'nowhere', None)
-        self.assertLessEqual(len(calls), 1)  # syncfs once per filesystem; sync() only without it
+        self.assertLessEqual(sync.call_count, 1)  # syncfs once per filesystem; sync() only without it
 
 
 class LostSwitchTests(Jobs):
