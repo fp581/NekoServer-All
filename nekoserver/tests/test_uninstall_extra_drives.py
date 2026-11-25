@@ -271,6 +271,8 @@ class StaleSettingsTests(unittest.TestCase):
         self.assertEqual(settings['storage']['data_ssd'], SETTINGS['storage']['data_ssd'])
         self.assertTrue(source.startswith(str(self.mine) + ". This server's data was moved from the dashboard"))
         self.assertEqual(json.loads(self.mine.read_text()), self.stale, 'the uninstaller writes no settings')
+        self.assertNotIn('brought up to date', source)  # and says no file was
+        self.assertTrue(source.endswith('(from ' + str(self.record) + ').'), source)
         plan = self.system.plan(settings=settings)
         said = plan.describe({'server', 'backups', 'media'})
         self.assertIn('remove ' + str(self.system.root) + D3 + '/backups  (', said)
