@@ -323,6 +323,13 @@ def on_nekoserver_drive(config, category, real, found, find):
 AS_THE_APP = r"""
 import os, sys
 folder, write = sys.argv[1], sys.argv[2] == 'write'
+if len(sys.argv) > 3:
+    # The folder below a drive NekoServer mounts, opened by root (below_own_mounts): the
+    # rest is tried from there, as this account.
+    try:
+        os.fchdir(int(sys.argv[3]))
+    except OSError as exc:
+        sys.exit('read ' + (exc.strerror or str(exc)))
 def first_file(top, depth):
     for entry in sorted(os.scandir(top), key=lambda e: e.name)[:200]:
         if entry.is_file(follow_symlinks=False):
@@ -371,23 +378,46 @@ print('ok')
 """
 
 
+def below_own_mounts(folder):
+    """(the first folder below the drive, the rest of the way from it) for a folder on a
+    drive NekoServer mounts under EXTRA_MOUNTS (the drive itself: (it, '.')), else None.
+    The apps never walk those folders: the person's folder reaches them through root's
+    bind and Docker, so NekoServer's own closed /mnt/nekoserver-drives (0700) and the
+    drive's top are not theirs to pass (T1-15, 1.0.1: such a folder was refused with
+    "give the account access yourself")."""
+    try:
+        parts = Path(folder).relative_to(EXTRA_MOUNTS).parts
+    except ValueError:
+        return None
+    if not parts:
+        return None
+    return Path(EXTRA_MOUNTS, *parts[:2]), (os.path.join(*parts[2:]) if len(parts) > 2 else '.')
+
+
 def as_app(uid, gid, folder, write=False, run=subprocess.run):
     """The apps' user's try at the folder: '' when it works, else what failed ("read
-    Permission denied", "write Read-only file system", "owner 65534:65534")."""
+    Permission denied", "write Read-only file system", "owner 65534:65534"). On a drive
+    NekoServer mounts, the try starts at the folder below the drive (below_own_mounts),
+    opened here as root."""
     switch = {'user': uid, 'group': gid, 'extra_groups': []} if os.geteuid() == 0 else {}
     if not switch and (uid, gid) != (os.getuid(), os.getgid()):
         return 'read only root can try a folder as another account (run setup with sudo)'
+    argv = [sys.executable, '-I', '-c', AS_THE_APP, str(folder), 'write' if write else 'read']
+    start, fds = below_own_mounts(folder), ()
+    if start:
+        try:
+            fds = (os.open(start[0], os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC),)
+        except OSError as exc:
+            return 'read ' + (exc.strerror or str(exc))
+        argv[4:5] = [start[1]]
+        argv.append(str(fds[0]))
     try:
-        done = run(
-            [sys.executable, '-I', '-c', AS_THE_APP, str(folder), 'write' if write else 'read'],
-            capture_output=True,
-            text=True,
-            timeout=90,
-            check=False,
-            **switch,
-        )
+        done = run(argv, capture_output=True, text=True, timeout=90, check=False, pass_fds=fds, **switch)
     except subprocess.TimeoutExpired:
         return ('write' if write else 'read') + ' no answer within 90 seconds'
+    finally:
+        for fd in fds:
+            os.close(fd)
     if done.returncode == 0 and done.stdout.strip() == 'ok':
         return ''
     said = (done.stderr or done.stdout or '').strip().splitlines()

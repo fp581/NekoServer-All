@@ -5773,7 +5773,8 @@ const MEDIA = {
   browse: null, // the folders offered to pick from, as media-browse said them
   path: null, // the form's folder box and the list to pick from (made with the form)
   box: null,
-  form: { kind: '', path: '', how: 'in_place', downloads: false, backup: true },
+  // how: 'in_place', 'copy', or 'made' (a new folder on the Extra drive `drive`, part C).
+  form: { kind: '', path: '', how: 'in_place', downloads: false, backup: true, drive: '' },
   formKey: ''
 };
 const MEDIA_POLL = 2000; // how often the page looks while a change is at work
@@ -5871,6 +5872,9 @@ function mediaFolderRow(kind, f) {
   info.append(el('h3', '', f.path), el('p', '', text(MEDIA_ROLE[f.use], 'Your folder')));
   if (f.new_files) {
     info.append(el('p', 'media-target', 'New downloads go here'));
+  }
+  if (f.made) {
+    info.append(el('p', '', 'Made by NekoServer on Extra drive ' + f.made));
   }
   if (f.backup_said) {
     info.append(el('p', '', 'Backup: ' + text(f.backup_said)));
@@ -6067,7 +6071,7 @@ function renderMedia() {
   nodes.push(button('Look again', mediaLook, 'button small secondary'));
   put('media-folders', nodes);
   // The form is drawn again only when what it offers changes: typing in it is never undone.
-  const key = JSON.stringify(kinds.map(k => [k.kind, k.downloads, k.room]));
+  const key = JSON.stringify(kinds.map(k => [k.kind, k.downloads, k.room, list(k.drives).map(d => d.drive)]));
   if (kinds.length && key !== MEDIA.formKey) {
     MEDIA.formKey = key;
     withFocus(() => put('media-add', [mediaForm(kinds)]));
@@ -6079,6 +6083,7 @@ function mediaRadio(name, value, label, checked, onChange) {
   Object.assign(input, { type: 'radio', name, value, checked });
   input.addEventListener('change', onChange);
   wrap.append(input, el('span', '', label));
+  wrap.radio = input; // the choice itself, for a form that sets it again
   return wrap;
 }
 function mediaForm(kinds) {
@@ -6108,6 +6113,15 @@ function mediaForm(kinds) {
   pathField.append(path);
   const pick = button('Pick a folder', () => void mediaBrowse(''));
   pick.id = 'media-pick';
+  // A new folder on an Extra drive (part C): the drives the server offers for the kind.
+  const driveField = el('label', 'field', 'The Extra drive'),
+    driveSelect = el('select');
+  driveSelect.id = 'media-drive';
+  driveSelect.addEventListener('change', () => {
+    f.drive = driveSelect.value;
+    fit();
+  });
+  driveField.append(driveSelect);
   const browse = el('div', 'media-browse');
   MEDIA.path = path;
   MEDIA.box = browse;
@@ -6121,35 +6135,69 @@ function mediaForm(kinds) {
   const backup = mediaBackupField(kinds.find(k => k.backup_question)?.backup_question);
   const fit = () => {
     const kind = kinds.find(k => k.kind === f.kind) || kinds[0];
+    const drives = list(kind.drives);
+    if (f.how === 'made' && !drives.length) {
+      f.how = 'in_place';
+    }
+    const made = f.how === 'made';
+    if (made && !drives.some(d => d.drive === f.drive)) {
+      f.drive = drives[0].drive;
+    }
+    madeChoice.hidden = !drives.length;
+    for (const [value, input] of choices) {
+      input.checked = value === f.how;
+    }
+    driveSelect.replaceChildren(
+      ...drives.map(d => {
+        const option = el('option', '', text(d.words, d.drive));
+        option.value = d.drive;
+        return option;
+      })
+    );
+    driveSelect.value = f.drive;
+    driveField.hidden = !made;
+    for (const node of [pathField, pick, browse]) {
+      node.hidden = made;
+    }
+    go.textContent = made ? 'Make the folder' : 'Connect folder';
     const copying = f.how === 'copy';
-    // Setup's "Back this up too?": music used where it is (the server asks it only of a NAS's).
+    // Setup's "Back this up too?": music used where it is (the server asks it only of a
+    // NAS's, and of a folder it makes on an Extra drive).
     backup.hidden = !(kind.backup_question && !copying);
     downloadsBox.disabled = copying || !kind.downloads;
     if (downloadsBox.disabled) {
       downloadsBox.checked = f.downloads = false;
     }
+    const where = drives.find(d => d.drive === f.drive);
     note.textContent = firstOf(
       [
         [copying, 'Its files are copied into the NekoServer library; your folder is kept as it is.'],
-        [!kind.downloads, 'This server does not download new ' + kind.words + '.'],
+        [!kind.downloads && !made, 'This server does not download new ' + kind.words + '.'],
         // The server's words (shared.json media_folders.full), as setup says them.
-        [!kind.room, text(kind.full)]
+        [!kind.room, text(kind.full)],
+        [
+          made,
+          'NekoServer makes ' + text(where?.path, 'a folder') + ' for the apps. Nothing else on the drive is changed.'
+        ]
       ],
       'Nothing in the folder is copied, moved or changed: the apps read it where it is.'
     );
   };
-  how.append(
-    mediaRadio('media-how', 'in_place', 'Use it where it is', f.how === 'in_place', () => {
-      f.how = 'in_place';
+  const choices = [
+    ['in_place', 'Use it where it is'],
+    ['copy', 'Copy its files into the library'],
+    ['made', 'A new folder on an Extra drive']
+  ].map(([value, label]) => {
+    const choice = mediaRadio('media-how', value, label, f.how === value, () => {
+      f.how = value;
       fit();
-    }),
-    mediaRadio('media-how', 'copy', 'Copy its files into the library', f.how === 'copy', () => {
-      f.how = 'copy';
-      fit();
-    }),
-    downloadsField,
-    note
-  );
+    });
+    choice.radio.id = 'media-how-' + value;
+    return [value, choice.radio, choice];
+  });
+  const madeChoice = choices[2][2];
+  how.append(...choices.map(c => c[2]), downloadsField, note);
+  choices.forEach(c => c.pop());
   kindSelect.addEventListener('change', () => {
     f.kind = kindSelect.value;
     fit();
@@ -6157,11 +6205,21 @@ function mediaForm(kinds) {
   downloadsBox.addEventListener('change', () => {
     f.downloads = downloadsBox.checked;
   });
-  fit();
   const go = el('button', 'button', 'Connect folder');
   go.type = 'submit';
+  fit();
   form.addEventListener('submit', e => {
     e.preventDefault();
+    if (f.how === 'made') {
+      const kind = kinds.find(k => k.kind === f.kind) || kinds[0];
+      const where = list(kind.drives).find(d => d.drive === f.drive);
+      const body = { change: 'make', kind: f.kind, drive: f.drive, downloads: !downloadsBox.disabled && f.downloads };
+      if (!backup.hidden) {
+        body.backup = f.backup;
+      }
+      void mediaChange(body, 'Making a folder for your ' + kind.words + ' on ' + text(where?.words, f.drive) + '…');
+      return;
+    }
     if (!f.path.trim()) {
       toast('Type the folder first, or pick one.');
       path.focus();
@@ -6178,7 +6236,7 @@ function mediaForm(kinds) {
     }
     void mediaChange(body, 'Checking ' + body.path + ' as the apps would see it…');
   });
-  form.append(kindField, pathField, pick, browse, how, backup, go);
+  form.append(kindField, pathField, pick, browse, driveField, how, backup, go);
   return form;
 }
 // The characters JavaScript's "." does not match: \n, \r, the line and the paragraph separator.
@@ -6212,7 +6270,12 @@ function mediaBackupField(asked) {
     );
   }
   box.append(
-    el('p', 'hint', 'Asked only for music on a NAS; a folder on a drive of this PC is not backed up by NekoServer.')
+    el(
+      'p',
+      'hint',
+      'Asked only for music on a NAS, or in a new folder on an Extra drive; another folder on a drive of this PC ' +
+        'is not backed up by NekoServer.'
+    )
   );
   return box;
 }
@@ -6542,6 +6605,13 @@ function useDisk(row) {
     drivesSent('drive-use', { ...body, how: 'erase', confirm, pin }, 'Erasing and preparing the drive…')
   );
 }
+/* "Use for films, shows or music" on an Extra drive: the Media folders page, with "A new
+ * folder on an Extra drive" chosen for this drive (part C). */
+function useDriveForMedia(drive) {
+  Object.assign(MEDIA.form, { how: 'made', drive });
+  MEDIA.formKey = '';
+  location.hash = '#media';
+}
 function releaseDisk(d) {
   confirmDialog(
     'DRIVES',
@@ -6573,6 +6643,11 @@ function diskActions(d, row, busy) {
     }
   } else if (row.refused && d.role === 'none') {
     nodes.push(hint(text(object(row.refused).words, 'It cannot be used now.')));
+  }
+  if (d.role === 'extra' && d.drive) {
+    const media = button('Use for films, shows or music', () => useDriveForMedia(d.drive), 'button small secondary');
+    media.setAttribute('aria-label', 'Use ' + text(d.drive_words, d.drive) + ' for films, shows or music');
+    actions.append(media);
   }
   if (d.role === 'extra' && row.can_release) {
     const stop = button('Stop using this drive', () => releaseDisk(d));

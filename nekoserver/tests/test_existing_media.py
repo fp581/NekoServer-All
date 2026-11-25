@@ -303,6 +303,48 @@ class CheckTests(unittest.TestCase):
                 folder.chmod(0o755)  # so the folder can be removed
             self.assertEqual(said, 'read Permission denied')
 
+    def test_a_folder_on_a_drive_nekoserver_mounts_is_tried_from_the_folder_below_the_drive(self):
+        # T1-15 (1.0.1): the apps reach such a folder through root's bind and Docker, never
+        # through /mnt/nekoserver-drives (0700) or the drive's top: those are not tried.
+        drives = Path('/mnt/nekoserver-drives')
+        below = existing_media.below_own_mounts
+        self.assertEqual(below(drives / 'd4/films/old'), (drives / 'd4/films', 'old'))
+        self.assertEqual(below(drives / 'd4/films'), (drives / 'd4/films', '.'))
+        self.assertEqual(below(drives / 'd4/media/movies'), (drives / 'd4/media', 'movies'))
+        self.assertEqual(below(drives / 'd4'), (drives / 'd4', '.'))
+        for elsewhere in (drives, Path('/mnt/nas/films'), Path('/mnt/nekoserver-drivesx/d4/films')):
+            self.assertIsNone(below(elsewhere), elsewhere)
+
+    @unittest.skipUnless(os.geteuid() == 0, 'switching to the apps\' account needs root')
+    def test_nekoservers_own_closed_folders_above_a_drive_folder_do_not_stop_the_apps(self):
+        # T1-15, as on the VM: /mnt/nekoserver-drives and the drive's top root's 0700, the
+        # person's films folder the apps' own. Refused before ("give the account access
+        # yourself"), though the apps read it through the bind; a closed folder of the
+        # person's below is still said.
+        with tempfile.TemporaryDirectory() as d:
+            drives = Path(d) / 'drives'
+            films = drives / 'd4' / 'films'
+            (films / 'Alien (1979)').mkdir(parents=True)
+            (films / 'Alien (1979)' / 'Alien.mkv').write_bytes(b'film')
+            for folder in (Path(d), drives, drives / 'd4'):
+                os.chmod(folder, 0o700)
+            for folder in (films, films / 'Alien (1979)', films / 'Alien (1979)' / 'Alien.mkv'):
+                os.chown(folder, 1000, 1000)
+            with mock.patch.object(existing_media, 'EXTRA_MOUNTS', drives):
+                self.assertEqual(existing_media.as_app(1000, 1000, films), '')
+                self.assertEqual(existing_media.as_app(1000, 1000, films, write=True), '')
+                self.assertEqual(sorted(p.name for p in films.iterdir()), ['Alien (1979)'], 'no test file left')
+                os.chown(films / 'Alien (1979)', 0, 0)
+                os.chmod(films / 'Alien (1979)', 0o700)
+                self.assertEqual(existing_media.as_app(1000, 1000, films / 'Alien (1979)'), 'read Permission denied')
+                os.chmod(films, 0o700)
+                os.chown(films, 0, 0)
+                self.assertEqual(existing_media.as_app(1000, 1000, films), 'read Permission denied')
+            # The same folder elsewhere is tried through every folder above it, as before.
+            os.chmod(films, 0o755)
+            os.chown(films, 1000, 1000)
+            self.assertEqual(existing_media.as_app(1000, 1000, films), 'read Permission denied')
+
     @unittest.skipUnless(os.geteuid() == 0, 'switching to the apps\' account needs root')
     def test_the_apps_account_really_tries_and_leaves_the_folder_as_it_was(self):
         for folder in (self.pc.top, self.pc.nas):
