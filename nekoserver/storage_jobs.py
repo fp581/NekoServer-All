@@ -2171,13 +2171,16 @@ def run_request(request, config, settings_files, state=None, folder=None, out=pr
         if not stuck:
             job.result('failed', 'No job is waiting to be finished. Nothing was changed.')
             return 1
-        return (retry if job.action == 'retry' else give_up)(job, stuck)
+        if job.action == 'retry':
+            return retry(job)
+        give_up(job, stuck)
+        return 1  # a job given up is a job not done: its result says "failed"
     if stuck:
         job.result('failed', STUCK_WORDS, STUCK_ADVICE)
         return 1
     held = hold_operation(OPERATION_LOCK)
     if held is None:
-        job.result('failed', FACTS.get('busy', 'Another job is at work.'), 'Try again later.')
+        job.result('failed', FACTS.get('busy', ANOTHER_JOB), TRY_LATER)
         return 1
     with held:
         busy = nightly_at_work(job.config)
@@ -2205,6 +2208,9 @@ def nightly_at_work(config):
     return held_lock_reason([(migrate.recovery_lock(config), NIGHTLY_AT_WORK), (capacity.USB_LOCK, NIGHTLY_AT_WORK)])
 
 
+# Said when another job holds the operation lock (FACTS names it, from the control service).
+ANOTHER_JOB = 'Another job is at work.'
+TRY_LATER = 'Try again later.'
 STUCK_WORDS = 'A job that was cut off is not finished yet.'
 STUCK_ADVICE = (
     'It is finished at the next start, or now with "Try again" (once its drives are back), or "Give it up": '
@@ -2212,7 +2218,7 @@ STUCK_ADVICE = (
 )
 
 
-def retry(job, stuck):
+def retry(job):
     """A job the start could not finish, tried again now (its drives back): the start's own
     steps, the resume then the finish, in this run, under the operation lock and with the
     apps stopped, as at the start before Docker (review of cdcbc14: the resume copies the
@@ -2222,7 +2228,7 @@ def retry(job, stuck):
 
     held = hold_operation(OPERATION_LOCK)
     if held is None:
-        job.result('failed', FACTS.get('busy', 'Another job is at work.'), 'Try again later.')
+        job.result('failed', FACTS.get('busy', ANOTHER_JOB), TRY_LATER)
         return 1
     with held:
         busy = nightly_at_work(job.config)
@@ -2232,7 +2238,7 @@ def retry(job, stuck):
         try:
             stopped = migrate.stop_writers(out=job.out, note=lambda units: None, own=left_alone())
         except RuntimeError as error:
-            job.result('failed', f'{error}. Nothing was changed.', 'Try again later.')
+            job.result('failed', f'{error}. Nothing was changed.', TRY_LATER)
             return 1
         try:
             code = resume(job.config, job.settings_files, job.state, job.folder, job.out, hand_off=False)
@@ -2249,13 +2255,14 @@ def give_up(job, stuck):
     """A job that can not be finished (its drive lost) let go, under the operation lock:
     before its commit point it is undone as far as the drives that are there allow; after
     it the settings stay as the switch wrote them, and what it could not do is said (and
-    done later when it needs a drive that is away)."""
+    done later when it needs a drive that is away). Every way it ends is said in the
+    result; the caller's exit code is 1 for each (the job was not done)."""
     from neko_common import OPERATION_LOCK, hold_operation
 
     held = hold_operation(OPERATION_LOCK)
     if held is None:
-        job.result('failed', FACTS.get('busy', 'Another job is at work.'), 'Try again later.')
-        return 1
+        job.result('failed', FACTS.get('busy', ANOTHER_JOB), TRY_LATER)
+        return
     with held:
         cut = Job(stuck['request'], job.config, job.settings_files, job.state, job.folder, job.out)
         undo, kind = stuck.get('undo') or {}, (stuck.get('request') or {}).get('kind')
@@ -2264,7 +2271,7 @@ def give_up(job, stuck):
             # Given up with every drive there, the settings would go back without what the
             # apps wrote at the new place (review of cdcbc14): this is for a lost drive.
             job.result('failed', 'Its drives are all here: use "Try again". Nothing was changed.', STUCK_ADVICE)
-            return 1
+            return
         if not stuck.get('committed'):
             undo_cut_off(cut, stuck)
             words = 'The job was given up and undone: everything is as it was before it.'
@@ -2289,7 +2296,6 @@ def give_up(job, stuck):
             words = 'The job was given up. Run setup again (sudo bash install.sh) so every app is as the settings say.'
         cut.result('failed', words)
         cut.done()
-    return 1
 
 
 def mirror_given_up(undo):
@@ -2645,7 +2651,7 @@ def finish(config, settings_files, state=None, folder=None, out=print, sleep=tim
             with held:
                 return finish_held(job, saved)
         sleep(10)
-    job.result('failed', FACTS.get('busy', 'Another job is at work.'), 'It is tried again at the next start.')
+    job.result('failed', FACTS.get('busy', ANOTHER_JOB), 'It is tried again at the next start.')
     return 1
 
 
