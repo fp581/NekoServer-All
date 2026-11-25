@@ -1654,8 +1654,6 @@ def unretire(job, kind, here):
 def undo_move(job):
     """Before the commit point: the new copy taken out of the apps' places again and
     deleted; the old folders were never touched."""
-    import shutil
-
     journal = read_state(JOURNAL, job.state) or {}
     saved, switching = journal.get('undo', {}), journal.get('phase') in ('switch', 'unswitch', 'lost')
     staging = Path(saved.get('staging', ''))
@@ -1668,15 +1666,22 @@ def undo_move(job):
     if kind == 'backups' and here not in (None, 'media') and switching:
         rebind_backups(job.config, job.out)
     if job.action == 'move' and staging.name.startswith('nekoserver-new-') and staging.is_dir():
-        if journal.get('phase') == 'lost':
-            # What was at the new place may hold an app's writes since the start (an upload
-            # from a phone): only its empty folders go (T5 on 5d6eaed).
-            if not remove_empty(staging):
-                job.journal('lost', True, kept=str(staging))
-        else:
-            shutil.rmtree(staging)
+        drop_staging(job, staging, journal.get('phase') == 'lost')
     if job.action == 'back':
         restore_back_copy(job, journal)
+
+
+def drop_staging(job, staging, lost):
+    """A move's new copy, taken out of the apps' places, deleted. Undoing a lost switch,
+    what was at the new place may hold an app's writes since the start (an upload from a
+    phone): only its empty folders go, and the journal says where the rest is kept (T5 on
+    5d6eaed)."""
+    import shutil
+
+    if not lost:
+        shutil.rmtree(staging)
+    elif not remove_empty(staging):
+        job.journal('lost', True, kept=str(staging))
 
 
 def old_copy(job):
