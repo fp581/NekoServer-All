@@ -1219,14 +1219,12 @@ class Plan:
             notes.append('Take out of /etc/fstab: ' + ' | '.join(lines))
         for folder in (self.data, self.media, self.external):
             if self.mounted(folder):
-                notes.append('Unmount ' + folder + ' and remove the empty folder')
+                notes.append(unmount_note(folder))
         for name in sorted(self.placed):
             if self.at(self.mount_of(EXTRA + name)).is_dir():
-                notes.append(
-                    'Unmount ' + self.mount_of(EXTRA + name) + ' (a drive of its own) and remove the empty folder'
-                )
+                notes.append(unmount_note(self.mount_of(EXTRA + name), ' (a drive of its own)'))
         for folder in self.unnamed_extra():
-            notes.append('Unmount ' + folder + ' (a drive the settings do not name) and remove the empty folder')
+            notes.append(unmount_note(folder, ' (a drive the settings do not name)'))
         if self.own_folders:
             notes.append(
                 'Your own folders used where they are are unmounted from the library; the folders, and the '
@@ -1406,6 +1404,11 @@ class Plan:
     def phrase(self, chosen):
         personal = [PERSONAL[k] for k, *_ in CHOICES if k in chosen and k in PERSONAL]
         return 'remove NekoServer' + (' and delete my ' + ', '.join(personal) if personal else '')
+
+
+def unmount_note(folder, what=''):
+    """The plan's line for a drive the mounts choice unmounts: `what` says which kind it is."""
+    return 'Unmount ' + folder + what + ' and remove the empty folder'
 
 
 def choose(ask=input, out=print):
