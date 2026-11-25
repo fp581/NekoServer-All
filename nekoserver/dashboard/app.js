@@ -6701,6 +6701,10 @@ function driveDiskCard(d, look, busy, signed) {
   }
   return card;
 }
+/* "Your music is", "your photos are" (T4-101-3: "Your music are"). */
+function isOrAre(words) {
+  return words === 'music' ? 'is' : 'are';
+}
 /* What a move does to the apps, said before it starts: all of them pause for its last step
  * (the last copy, the compare and the switch; storage_jobs.py), with how long that took the
  * last time when the last job's result says (paused_seconds). */
@@ -6709,7 +6713,9 @@ function moveWords(words, result) {
   const said =
     'Your ' +
     words +
-    ' are copied while the apps keep running. For the last step all apps pause and start again by themselves.';
+    ' ' +
+    isOrAre(words) +
+    ' copied while the apps keep running. For the last step all apps pause and start again by themselves.';
   return Number.isInteger(n) && n >= 0 ? said + ' Last time that took ' + plural(n, 'second') + '.' : said;
 }
 function moveDialog(k, busy) {
@@ -6787,7 +6793,9 @@ function deleteOld(k, copy) {
           text(k.words).toLowerCase() +
           ' on the ' +
           text(k.place_words, 'drive') +
-          ' are not touched.'
+          ' ' +
+          isOrAre(text(k.words).toLowerCase()) +
+          ' not touched.'
       )
     ],
     text(copy.delete_words),
@@ -6971,15 +6979,22 @@ function drivesSection(title, nodes) {
 }
 /* Signed in: storage-state asked for when the page opens and every minute it stays open;
  * signed out: nothing of the last answer is kept. */
-function drivesFollow(signed) {
-  if (!signed) {
+function drivesFollow(reach) {
+  if (!reach.keep) {
     DRIVES.answer = null;
     DRIVES.asked = 0;
     DRIVES.lookTried = false;
     DRIVES.refused = null;
-  } else if (!DRIVES.asked || Date.now() - DRIVES.asked > DRIVES_AGAIN) {
+  } else if (reach.ask && (!DRIVES.asked || Date.now() - DRIVES.asked > DRIVES_AGAIN)) {
     void drivesState();
   }
+}
+/* The control service out of reach (E21): setup restarts it for a second or two in every
+ * run, a Drives job's too (T4-101-2). Signed out, nothing is kept; signed in, the last
+ * answer is kept for when it is back, and while a job is at work the page still shows it
+ * (its own looks go on through the gap); a new look waits until the service answers. */
+function drivesReach(signed, controlError, working) {
+  return { keep: signed, draw: signed && (!controlError || working), ask: signed && !controlError };
 }
 /* What is at the top of the page: the job, or why the disks are not shown yet. */
 function drivesTop(signed, look, job) {
@@ -7001,8 +7016,9 @@ function drivesGrid(rows, draw, title, none) {
 }
 function renderDrives() {
   const s = state.status || {},
-    signed = signedIn() && !state.controlError;
-  drivesFollow(signed);
+    reach = drivesReach(signedIn(), state.controlError, !!DRIVES.answer && jobWorking()),
+    signed = reach.draw;
+  drivesFollow(reach);
   const look = signed && DRIVES.answer?.look ? driveLook() : null;
   const job = storageJob(),
     busy = jobWorking();

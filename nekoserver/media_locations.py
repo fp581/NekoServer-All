@@ -132,6 +132,11 @@ DRIVE_AWAY = (
 )
 NOT_MADE = '{path} is not a folder NekoServer can make (a file or a link is in its place). Nothing was changed.'
 MADE = 'A folder for your {words} on Extra drive {drive} is ready: {path}.'
+# T3-101-3: one there already with files in it is the person's, connected as theirs.
+THEIRS = (
+    '{path} was on the drive already, with files in it, so it is connected as a folder of yours: NekoServer never '
+    'counts it as its own.'
+)
 ONLY_SSD = 'The settings copy on the SSD was saved; {path} was not there to save in, so setup there has the old choice.'
 
 
@@ -458,6 +463,11 @@ def folder_that_can_be_added(config, kind, asked):
         raise Refusal(str(refused)) from None
 
 
+def are(kind):
+    """ "Your music is", "your films are" (T4-101-3)."""
+    return 'is' if kind == 'music' else 'are'
+
+
 def made_and_backed_up(entry, found, asked, made, out):
     """The entry of a folder made on an Extra drive names it (`made`), and music asked
     about the backup has the answer: as setup does, only music on a NAS (or in a folder
@@ -497,9 +507,11 @@ def add(config, asked, out, made=None):
     if staying:
         out['notes'].append(existing_media.stays_words(staying))
     kept_by_the_app(config, kind, before, out)
-    out['message'] = f'Your {words} in {entry["path"]} are connected, used where they are.'
+    out['message'] = (
+        f'Your {words} in {entry["path"]} {are(kind)} connected, used where {"it is" if kind == "music" else "they are"}.'
+    )
     if entry['new_files']:
-        out['message'] += f' New {words} are saved there from now on.'
+        out['message'] += f' New {words} {are(kind)} saved there from now on.'
     return [kind]
 
 
@@ -527,7 +539,9 @@ def copy_in(config, kind, path, out):
     config[existing_page.COPIES] = [*listed, wanted]
     answered(config, kind)
     out['copy'] = existing_page.copy_said(shown)
-    out['message'] = f'Your {words} in {shown["source"]} are copied into the library. Your folder is not changed.'
+    out['message'] = (
+        f'Your {words} in {shown["source"]} {are(kind)} copied into the library. Your folder is not changed.'
+    )
     return [kind]
 
 
@@ -542,7 +556,9 @@ def remove(config, asked, out):
     config.update(existing_media.without_choice(config, kind, asked['slot']))
     out['message'] = f'{entry["path"]} is taken away from your {words}. ' + KEPT.format(path=entry['path'])
     if entry['new_files']:
-        out['notes'].append(f'New {words} are saved in the NekoServer library ({library_folder(config, kind)}) now.')
+        out['notes'].append(
+            f'New {words} {are(kind)} saved in the NekoServer library ({library_folder(config, kind)}) now.'
+        )
     return [kind]
 
 
@@ -566,7 +582,9 @@ def target(config, asked, out):
     before = existing_media.new_files_folder(config, kind)
     if wanted == LIBRARY:
         config.update(existing_media.without_new_files(config, kind))
-        out['message'] = f'New {words} are saved in the NekoServer library ({library_folder(config, kind)}) now.'
+        out['message'] = (
+            f'New {words} {are(kind)} saved in the NekoServer library ({library_folder(config, kind)}) now.'
+        )
     else:
         old = entries[wanted]
         answering(old['path'])
@@ -579,18 +597,15 @@ def target(config, asked, out):
         out['notes'].append(found['new_files']['note'])
         entry = kept_flags(existing_media.entry_for(kind, found, new_files=True), old)
         config['placement'] = existing_media.with_choice(config, entry)['placement']
-        out['message'] = f'New {words} are saved in {entry["path"]} now.'
+        out['message'] = f'New {words} {are(kind)} saved in {entry["path"]} now.'
     if staying:
         out['notes'].append(existing_media.stays_words(staying))
     kept_by_the_app(config, kind, before, out)
     return [kind]
 
 
-def make(config, asked, out):
-    """ "A folder on this Extra drive": <drive>/media/<kind> made for the apps (the folder
-    above it root's, 0755; the kind's the apps' account's, 2775, as the library's), then
-    connected as a folder used where it is, saved as NekoServer's folder on that drive.
-    One made before (then taken away) is used as it is."""
+def make_refusal(config, asked):
+    """The folder "A folder on this Extra drive" makes, or the plain reason it is not made."""
     kind, words, drive = asked['kind'], WORDS[asked['kind']], asked['drive']
     if not media_group(config, GROUP[kind]):
         raise Refusal(NOT_ON.format(words=words))
@@ -608,6 +623,20 @@ def make(config, asked, out):
     for folder in (path.parent, path):
         if os.path.islink(folder) or (os.path.lexists(folder) and not os.path.isdir(folder)):
             raise Refusal(NOT_MADE.format(path=folder))
+    return path
+
+
+def make(config, asked, out):
+    """ "A folder on this Extra drive": <drive>/media/<kind> made for the apps (the folder
+    above it root's, 0755; the kind's the apps' account's, 2775, as the library's), then
+    connected as a folder used where it is, saved as NekoServer's folder on that drive.
+    One made before (then taken away) is used as it is."""
+    kind, words, drive = asked['kind'], WORDS[asked['kind']], asked['drive']
+    path = make_refusal(config, asked)
+    if path.is_dir() and any(path.iterdir()):
+        kinds = add(config, {**asked, 'path': str(path), 'how': 'in_place'}, out)
+        out['notes'].insert(0, THEIRS.format(path=path))
+        return kinds
     uid, gid = existing_media.app_user(config)
     ensure_directory(path.parent, 0o755)
     ensure_directory(path, 0o2775, uid, gid)
@@ -615,7 +644,7 @@ def make(config, asked, out):
     saved = entries_of(config, kind)
     out['message'] = MADE.format(words=words, drive=drive, path=path)
     if any(e['new_files'] and e['path'] == str(path) for e in saved.values()):
-        out['message'] += f' New {words} are saved there from now on.'
+        out['message'] += f' New {words} {are(kind)} saved there from now on.'
     return kinds
 
 
