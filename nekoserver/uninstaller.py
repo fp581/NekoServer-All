@@ -1046,9 +1046,24 @@ class Plan:
             and (
                 line.split()[1] in folders
                 or line.split()[1].startswith(EXTRA_MOUNTS + '/')
+                or self.extra_bind(line)
                 or any(line.split()[0] == 'UUID=' + u for u in self.uuids)
             )
         ]
+
+    def extra_bind(self, line):
+        """A bind of NekoServer's from a drive under EXTRA_MOUNTS (the moved backups and
+        photo archive, the apps installed there: storage.installed_line), found by its
+        source or by the drive it waits for (x-systemd.requires-mounts-for). Their mount
+        point is elsewhere (on the HDD, the SSD). A bind of one of the person's own folders
+        is theirs and stays."""
+        fields = line.split()
+        if len(fields) < 4 or 'bind' not in fields[3].split(','):
+            return False
+        if any(fields[0] == folder['path'] for folder in self.own_folders):
+            return False
+        waits = [o.split('=', 1)[1] for o in fields[3].split(',') if o.startswith('x-systemd.requires-mounts-for=')]
+        return any(place.startswith(EXTRA_MOUNTS + '/') for place in [fields[0], *waits])
 
     # ---- the choices, in words a person can check
     def _group(self, key):
@@ -2464,6 +2479,9 @@ def _remove_mounts(plan, path, call, out):
     left = []
     block, inside = fstab_blocks(path.read_text()) if path.is_file() else ([], [])
     lines = plan.fstab_lines() + block
+    # Binds from a drive of its own written outside setup's blocks: unmounted with what is
+    # mounted inside the drives, before the drives under them.
+    inside = inside + [line.split()[1] for line in lines if plan.extra_bind(line)]
     if lines:
         kept = [line for line in path.read_text().splitlines() if line not in lines]
         backup = replace_system_file(path, '\n'.join(kept) + '\n')

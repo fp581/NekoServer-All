@@ -180,6 +180,42 @@ class ExtraDriveTests(unittest.TestCase):
                 call,
             )
 
+    def test_neko_s_binds_from_an_extra_drive_go_with_the_mounts_and_the_person_s_stay(self):
+        # T5, review of T1-16: drill 10's binds mount elsewhere (on the HDD, the SSD), so
+        # their mount point alone did not find them. Here they are outside setup's blocks.
+        waits = 'bind,nofail,x-systemd.requires-mounts-for=' + D3
+        neko = [
+            f'{D3}/backups {MEDIA}/backups none {waits} 0 0',
+            f'{D3}/photos/archive {MEDIA}/photos/archive none {waits} 0 0',
+            f'{D3}/nekoserver/appdata/immich /srv/nekoserver/appdata/immich none {waits},'
+            'x-systemd.requires-mounts-for=/srv/nekoserver 0 0',
+            # Found only by the drive it waits for: its source is not on d3.
+            f'/srv/nekoserver/appdata/shared /srv/nekoserver/appdata/radarr/shared none {waits} 0 0',
+        ]
+        mine = f'{D4}/films {MEDIA}/library/extra/films none bind,ro,nofail 0 0'
+        fstab = self.system.root / 'etc/fstab'
+        fstab.write_text(fstab.read_text() + '\n'.join(neko + [mine]) + '\n')
+        settings = {
+            **MOVED,
+            'placement': {'movies': {'extra': [{'path': D4 + '/films', 'holds': 'movies', 'use': 'in_place'}]}},
+        }
+        self.plan = self.system.plan(settings=settings)
+        lines = self.plan.fstab_lines()
+        for line in neko:
+            self.assertIn(line, lines)
+        self.assertNotIn(mine, lines)
+        mounted = {self.at(MEDIA + '/backups'), self.at(MEDIA + '/photos/archive')}
+        real = uninstaller.os.path.ismount
+        with mock.patch.object(uninstaller.os.path, 'ismount', side_effect=lambda p: str(p) in mounted or real(p)):
+            self.remove({'server', 'mounts'})
+        text = fstab.read_text()
+        for line in neko:
+            self.assertNotIn(line, text)
+        self.assertIn(mine, text)
+        umounts = [call[1] for call in self.system.calls if call[:1] == ['umount']]
+        self.assertEqual(umounts[:2], [MEDIA + '/photos/archive', MEDIA + '/backups'])  # the deepest first
+        self.assertTrue(self.there(D3 + '/backups/apps/nextcloud.tar'))
+
 
 if __name__ == '__main__':
     unittest.main()
