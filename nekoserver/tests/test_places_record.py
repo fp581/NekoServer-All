@@ -114,6 +114,7 @@ class RecordTests(Folder):
         config, said = json.loads(path.read_text()), []
         self.assertTrue(neko_common.take_places(config, [path], out=said.append))
         self.assertEqual(len(said), 1)
+        self.assertTrue(said[0].endswith(f'(from {self.record}). {path} brought up to date.'), said[0])
         saved = json.loads(path.read_text())
         self.assertEqual(saved['locations'], moved())
         self.assertEqual(saved['storage']['data_ssd'], NEW_SSD)
@@ -148,6 +149,15 @@ class ToolTests(Folder):
         self.assertEqual(config['locations'], moved())
         self.assertNotIn('locations', json.loads(self.path.read_text()))
         self.assertIn('moved from the dashboard', out.getvalue())
+        self.assertNotIn('brought up to date', out.getvalue())  # nothing was written
+
+    def test_a_file_that_can_not_be_written_is_said_in_the_same_line(self):
+        said = []
+        config = json.loads(self.path.read_text())
+        with mock.patch.object(neko_common, 'atomic_json', side_effect=OSError('read-only')):
+            neko_common.take_places(config, [self.path], out=said.append)
+        self.assertEqual(len(said), 1)
+        self.assertIn(f'{self.path} could not be (read-only): the places above are used anyway.', said[0])
 
     def test_setup_keeps_the_record_in_step_and_makes_none(self):
         import installer
@@ -212,6 +222,60 @@ class ToolTests(Folder):
         self.assertEqual(config['storage']['data_ssd'], NEW_SSD)
         self.assertEqual(neko_common.drive_folder(config, 'd3'), neko_common.EXTRA_MOUNTS / 'd3')
         self.assertEqual(config['locations']['backups'], 'd3')
+
+
+# Each place in the code that writes "locations" or a drive under "storage", and why the
+# record stays right with it (T5 on bc4efb8): current_places replaces the file's Extra
+# drives and places as a whole, so a writer that skips the record is undone by the next run.
+WRITERS = {
+    ('acceptance_summary.py', "out['locations'] = moved"): 'a report, not the settings',
+    ('migrate.py', "config['storage'][drive] = record_"): 'the SSD or the media drive only, never in the record',
+    ('modules/dashboard.py', "clean['locations'] = places"): "the dashboard's own copy for the collector",
+    (
+        'modules/network_storage.py',
+        "kept = config.setdefault('storage', {}).setdefault('media_hdd', {})",
+    ): 'the media drive',
+    (
+        'modules/storage.py',
+        "configured = config.setdefault('storage', {})",
+    ): 'setup: saved by persist_config, which records',
+    (
+        'modules/storage.py',
+        "chosen = config.setdefault('locations', {})",
+    ): 'setup: saved by persist_config, which records',
+    (
+        'modules/storage.py',
+        "storage = config.setdefault('storage', {})",
+    ): 'setup: saved by persist_config, which records',
+    ('native_runtime.py', "found['locations'] = config['locations']"): "the runtime's copy (drives.json)",
+    ('neko_common.py', "new['locations'] = json.loads(json.dumps(saved['locations']))"): 'current_places itself',
+}
+
+
+class WritersTests(unittest.TestCase):
+    def test_every_writer_of_the_places_keeps_the_record_right(self):
+        import re
+
+        pattern = re.compile(
+            r"""\[['"]locations['"]\]\s*=[^=]|setdefault\(['"]locations|\[['"]storage['"]\]\[[^]]+\]\s*=[^=]"""
+            r"""|\[['"]storage['"]\]\.update|setdefault\(['"]storage['"]"""
+        )
+        root = Path(__file__).resolve().parents[1]
+        found = set()
+        for path in sorted(root.rglob('*.py')):
+            relative = path.relative_to(root).as_posix()
+            if relative.startswith(('tests/', 'lab/')) or '/tests/' in relative:
+                continue
+            for line in path.read_text(encoding='utf-8').splitlines():
+                if pattern.search(line):
+                    found.add((relative, line.strip()))
+        new = sorted(found - set(WRITERS))
+        self.assertEqual(
+            new,
+            [],
+            'A new writer of "locations" or a drive under "storage": save it through Job.save_settings or '
+            "installer's persist_config (both keep /etc/nekoserver-os/places.json right), then add it here",
+        )
 
 
 if __name__ == '__main__':
