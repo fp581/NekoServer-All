@@ -287,5 +287,62 @@ class WritersTests(unittest.TestCase):
         )
 
 
+D4 = {'uuid': 'd4-uuid', 'fstype': 'ext4', 'added': True}
+
+
+class DrivesTests(Folder):
+    """T1-20 (drill 5): the upgrade's setup took a my-config.json without d4 and dropped d4
+    from the settings; its mount stayed, and "Move to d4" was refused ("d4" is not a drive
+    under "storage"). The record holds the Extra drives too, and no tool drops one from it
+    because a file lacks it."""
+
+    def setUp(self):
+        super().setUp()
+        config = server()
+        config['storage']['d4'] = dict(D4)
+        neko_common.write_places(config)
+        self.path = settings_file(self.root, **stale())  # d3 only
+
+    def test_a_file_without_an_added_drive_takes_it_from_the_record_and_says_so(self):
+        config, line = neko_common.current_places(json.loads(self.path.read_text()))
+        self.assertEqual(config['storage']['d4'], D4)
+        self.assertIn('Extra drives d3 and d4', line)
+
+    def test_the_upgrade_keeps_the_drive(self):
+        import upgrade
+
+        with mock.patch('sys.stdout', new_callable=io.StringIO) as out:
+            config = upgrade.settings_for_run(str(self.path))
+        self.assertEqual(config['storage']['d4'], D4)
+        self.assertEqual(json.loads(self.path.read_text())['storage']['d4'], D4)
+        self.assertIn('d4', out.getvalue())
+
+    def test_a_drive_setup_gives_up_leaves_the_record(self):
+        """Review of 9e390ba: setup's own "Is this drive permanently unavailable?" -> yes
+        takes the drive out; the record must not bring it back at the next run."""
+        import copy
+
+        import installer
+
+        config = installer.settings_for_run(self.path, apply=True, out=lambda line: None)
+        ctx = installer.Context(config, lambda *a: None, apply=True, config_path=self.path, saved=copy.deepcopy(config))
+        del ctx.config['storage']['d3']
+        ctx.persist_config()
+        self.assertNotIn('d3', json.loads(self.record.read_text())['storage'])
+        again = json.loads(self.path.read_text())
+        self.assertFalse(
+            neko_common.take_places(again, [self.path], out=lambda line: None) and 'd3' in again['storage']
+        )
+        self.assertNotIn('d3', again['storage'])
+
+    def test_setup_saving_a_file_without_the_drive_never_drops_it_from_the_record(self):
+        import installer
+
+        config = json.loads(self.path.read_text())  # as a tool that did not take the record
+        ctx = installer.Context(config, lambda *a: None, apply=True, config_path=self.path)
+        ctx.persist_config()
+        self.assertEqual(json.loads(self.record.read_text())['storage']['d4'], D4)
+
+
 if __name__ == '__main__':
     unittest.main()

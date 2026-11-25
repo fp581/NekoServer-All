@@ -36,8 +36,14 @@ def saved_journal(root):
     return storage_jobs.read_state('journal.json', Path(root) / 'state')
 
 
-def copy(source, target, final=False, out=print, again=False):
-    shutil.copytree(source, target, dirs_exist_ok=True)
+def copy(source, target, final=False, out=print, again=False, skip=()):
+    top = Path(source)
+    shutil.copytree(
+        source,
+        target,
+        dirs_exist_ok=True,
+        ignore=lambda folder, names: [n for n in names if Path(folder) == top and n in skip],
+    )
 
 
 class Jobs(unittest.TestCase):
@@ -56,7 +62,11 @@ class Jobs(unittest.TestCase):
         self.settings = [self.root / 'config.json', self.root / 'my-config.json']
         self.started, self.setups = [], []
         self.differ = []
+        # Each drive is there while its folder is (T1-18); a test unplugs one, or puts
+        # another disk in its place, here.
+        self.unplugged = {}
         for patch in (
+            mock.patch('neko_common.mounted_uuid', self.mounted, create=True),
             mock.patch('neko_common.EXTRA_MOUNTS', self.root / 'drives'),
             mock.patch('neko_common.OPERATION_LOCK', self.root / 'operation.lock'),
             mock.patch.object(storage_jobs, 'FACTS', {'min_bytes': 16 * GB}),
@@ -64,6 +74,8 @@ class Jobs(unittest.TestCase):
             mock.patch.object(storage_jobs, 'free_bytes', return_value=100 * GB),
             mock.patch.object(storage_jobs, 'du', return_value=0),
             mock.patch.object(storage_jobs, 'steps_working', lambda config: []),
+            # Nothing is backed up beside itself here (test_storage_beside_backups has the real one).
+            mock.patch.object(storage_jobs, 'beside_backups', lambda config, kind, to: []),
             mock.patch.object(
                 storage_jobs, 'setup_again', lambda job: self.setups.append(json.loads(json.dumps(job.config)))
             ),
@@ -77,6 +89,18 @@ class Jobs(unittest.TestCase):
         ):
             patch.start()
             self.addCleanup(patch.stop)
+
+    def mounted(self, folder):
+        state = self.unplugged.get(Path(folder))
+        if state == 'missing' or not Path(folder).is_dir():
+            return None
+        return 'another-disk' if state == 'other' else ''
+
+    def unplug(self, place, how='missing'):
+        self.unplugged[storage_jobs.root_of(self.config, place)] = how
+
+    def plug_in(self, place):
+        self.unplugged.pop(storage_jobs.root_of(self.config, place), None)
 
     def stop_writers(self, out=print, note=None, own=()):
         note(['nekoserver-immich.service'])
@@ -253,7 +277,7 @@ class PowerCutTests(Jobs):
         self.assertEqual(last_result(self.root)['state'], 'resumed')
         self.assertIsNone(saved_journal(self.root))
 
-    def test_a_drive_the_job_needs_that_is_missing_keeps_the_journal(self):
+    def test_a_job_cut_before_its_switch_is_undone_without_a_drive_that_is_missing(self):
         self.config['storage']['d3']['uuid'] = 'd3-uuid'
         job = storage_jobs.Job(
             self.request('move', kind='photos', to='d3'),
@@ -264,9 +288,11 @@ class PowerCutTests(Jobs):
         )
         job.journal('copy', False, staging='x', here='ssd', to='d3')
         (self.root / 'drives/d3').rmdir()
-        self.assertEqual(self.resume(), 1)
-        self.assertIn('is finished when Extra drive d3 is back', last_result(self.root)['message'])
-        self.assertIsNotNone(saved_journal(self.root))
+        # T1-18: never held up by the drive; nothing is written on it, and the job is undone.
+        self.assertEqual(self.resume(), 0)
+        self.assertEqual(last_result(self.root)['state'], 'undone')
+        self.assertIn('Extra drive d3 is not connected', last_result(self.root)['message'])
+        self.assertIsNone(saved_journal(self.root))
 
 
 class DriveTests(Jobs):

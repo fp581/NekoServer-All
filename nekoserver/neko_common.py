@@ -1296,9 +1296,17 @@ def places_of(config):
     }
 
 
-def write_places(config, record=None):
-    """The record written (atomic, fsynced) from these settings."""
-    atomic_json(record or PLACES_RECORD, places_of(config))
+def write_places(config, record=None, keep_drives=False, given_up=()):
+    """The record written (atomic, fsynced) from these settings. `keep_drives`: an Extra
+    drive the record has and these settings lack is kept (setup saving a settings file
+    that never had it; T1-20), except one this run gave up (`given_up`: setup's "Is this
+    drive permanently unavailable?" answered yes)."""
+    places = places_of(config)
+    if keep_drives:
+        saved = read_places(record) or {'storage': {}}
+        kept = {name: drive for name, drive in saved['storage'].items() if name not in given_up}
+        places['storage'] = {**kept, **places['storage']}
+    atomic_json(record or PLACES_RECORD, places)
 
 
 def read_places(record=None):
@@ -1341,9 +1349,23 @@ def current_places(config, record=None):
     line = (
         "This server's data was moved from the dashboard; using its current places"
         + (': ' + ', '.join(said) if said else ': everything on the apps and media drives')
+        + drives_said(config, saved)
         + f' (from {record}).'
     )
     return new, line
+
+
+def drives_said(config, saved):
+    """The Extra drives the record names, said when the settings file has others (T1-20:
+    setup takes a drive the file lacks from the record, and says so)."""
+    names = sorted(saved['storage'])
+    if set(names) == set(extra_drives(config)):
+        return ''
+    if not names:
+        return '; no Extra drives'
+    if len(names) == 1:
+        return f'; Extra drive {names[0]}'
+    return '; Extra drives ' + ', '.join(names[:-1]) + ' and ' + names[-1]
 
 
 def take_places(config, paths=(), out=print, record=None):
@@ -1374,6 +1396,69 @@ def take_places(config, paths=(), out=print, record=None):
     done = [f'{", ".join(written)} brought up to date'] if written else []
     out(line + ''.join(f' {part[0].upper()}{part[1:]}.' for part in done + failed))
     return True
+
+
+# Whether a drive is there (T1-18): an Extra drive gone, with an empty mount folder (or
+# another disk) in its place, was read and written as if it were the drive. A job checks
+# each drive it uses before it starts and before each write.
+STORAGE_KEYS = {'ssd': 'data_ssd', 'media': 'media_hdd'}
+
+
+def mounted_uuid(folder):
+    """The filesystem UUID of what is mounted at `folder`; '' for a mount that has none (a
+    network share) or when it can not be read; None when nothing is mounted there. findmnt
+    alone: a bind of a folder on the same filesystem (a role kept on the disk Linux runs
+    from, or on the drive both roles share) is no mount to os.path.ismount (review of
+    cdcbc14), and findmnt shows it with its filesystem's UUID."""
+    try:
+        found = subprocess.run(
+            ['findmnt', '-n', '-o', 'UUID', '--mountpoint', str(folder)],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ''
+    if found.returncode != 0:
+        return None  # findmnt finds nothing mounted there
+    words = found.stdout.split()
+    return words[-1] if words else ''  # the top mount, the one paths reach
+
+
+def drive_away(config, place):
+    """None when the drive `place` ("ssd", "media" or an Extra drive's name) is there: the
+    filesystem the settings name, mounted at its folder. "missing" when nothing is mounted
+    there (or it is no drive of the settings), "other" when another disk is. A layout that
+    names no filesystem for it (one drive; a folder on a network share) needs its folder."""
+    try:
+        root = drive_folder(config, place)
+    except (RuntimeError, KeyError, TypeError):
+        return 'missing'
+    storage = config.get('storage') if isinstance(config.get('storage'), dict) else {}
+    record = storage.get(STORAGE_KEYS.get(place, place))
+    uuid = record.get('uuid') if isinstance(record, dict) else None
+    if not uuid:
+        return None if Path(root).is_dir() else 'missing'
+    now = mounted_uuid(root)
+    if now is None:
+        return 'missing'
+    return 'other' if now and now != uuid else None
+
+
+def place_holding(config, path):
+    """The drive ("ssd", "media" or an Extra drive's name) whose folder holds `path`, the
+    deepest one (an Extra drive's folder may be under another's); None for none."""
+    real = Path(os.path.realpath(path))
+    found = None
+    for place in ('ssd', 'media', *sorted(extra_drives(config))):
+        try:
+            root = Path(os.path.realpath(drive_folder(config, place)))
+        except (RuntimeError, KeyError, TypeError):
+            continue
+        if (root == real or root in real.parents) and (found is None or len(root.parts) > len(found[1].parts)):
+            found = (place, root)
+    return found[0] if found else None
 
 
 def not_a_drive(config, drive):

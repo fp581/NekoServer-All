@@ -44,9 +44,9 @@ class Marked(Jobs):
             self.marks.append(('result', state))
             return result(job, state, message, advice, power_cut)
 
-        def copied(source, target, final=False, out=print, again=False):
+        def copied(source, target, final=False, out=print, again=False, skip=()):
             self.copies.append((str(Path(source).relative_to(self.root)), final, again))
-            copy(source, target, final, out, again)
+            copy(source, target, final, out, again, skip)
 
         def checked(config, before):
             self.checks.append(before)
@@ -311,13 +311,13 @@ class CutMoveTests(Marked):
         self.assertEqual((self.root / 'media/library/tv/s01.mkv').read_text(), 'tv')
         self.assertEqual(last_result(self.root)['state'], 'undone')
 
-    def test_a_drive_the_job_came_from_that_is_missing_keeps_the_journal(self):
+    def test_a_job_cut_before_its_switch_is_undone_without_the_drive_it_came_from(self):
         self.cut('copy', kind='photos', to='media', here='d3')
         (self.root / 'drives/d3').rmdir()
-        self.assertEqual(self.resume(), 1)
-        self.assertEqual(last_result(self.root)['state'], 'failed')
-        self.assertEqual(last_result(self.root)['advice'], 'Plug it in and restart.')
-        self.assertIsNotNone(saved_journal(self.root))
+        # T1-18: undone without the drive (nothing was written on it), never waiting for it.
+        self.assertEqual(self.resume(), 0)
+        self.assertEqual(last_result(self.root)['state'], 'undone')
+        self.assertIsNone(saved_journal(self.root))
 
     def test_a_cut_way_back_gives_the_old_copy_its_name_again(self):
         staging = self.cut('copy', kind='photos', to='ssd', job='back', copy=ID)
@@ -476,7 +476,8 @@ class FinishedAtTheStartTests(Marked):
             self.assertEqual(self.finish(), 1)
         self.assertEqual(last_result(self.root)['state'], 'failed')
         self.assertEqual(last_result(self.root)['message'], 'Finishing the job at the start stopped: setup failed')
-        self.assertEqual(last_result(self.root)['advice'], 'It is tried again at the next start.')
+        self.assertIn('Try again', last_result(self.root)['advice'])
+        self.assertIn('Give it up', last_result(self.root)['advice'])
         self.assertIsNotNone(saved_journal(self.root))
 
 

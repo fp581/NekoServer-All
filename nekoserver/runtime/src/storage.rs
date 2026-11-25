@@ -38,7 +38,8 @@ fn listed(key: &str) -> Vec<&'static str> {
 const ON_ITS_WAY: Duration = Duration::from_secs(60);
 const NOT_STARTED: &str = "The change could not be started, so nothing was changed. Try again; if it keeps failing, restart the server.";
 const STOPPED: &str = "The change stopped before it had finished, and nothing more is changed. Press Look again to see your drives as they are now.";
-const UNFINISHED: &str = "A change to your drives did not finish (the server stopped during it). Restart the server: the change is then finished, or put back as it was, before anything else.";
+const UNFINISHED: &str = "A change to your drives did not finish (the server stopped during it, or a drive it needs is away). Restart the server, or use Try again or Give it up on this page: the change is finished, or put back as it was, before anything else.";
+const NOTHING_WAITS: &str = "No change is waiting to be finished.";
 const ASK_DISK: &str = "Choose the drive again from the list (press Look again).";
 
 /// The page's ops (serve.rs names them) and the job each one starts.
@@ -51,6 +52,9 @@ fn job_of(op: &str) -> Option<&'static str> {
         "app_data_move_back" => "back",
         "app_data_delete_old" => "delete_old",
         "app_mirror_add" => "mirror_add",
+        // A change that could not be finished: tried again, or given up (T1-20).
+        "app_data_retry" => "retry",
+        "app_data_give_up" => "give_up",
         _ => return None,
     })
 }
@@ -127,7 +131,7 @@ pub fn checked(op: &str, request: &Value) -> std::result::Result<Value, &'static
         Ok(())
     };
     match job {
-        "look" => {}
+        "look" | "retry" | "give_up" => {}
         "use" => {
             disk(&mut asked)?;
             let how = request["how"]
@@ -149,6 +153,11 @@ pub fn checked(op: &str, request: &Value) -> std::result::Result<Value, &'static
         "move" => {
             kind(&mut asked)?;
             asked["to"] = json!(place(&request["to"]).ok_or("Move it to which drive?")?);
+            // The tick for a move that backs a kind up on its own drive (storage_jobs.py
+            // beside_backups): passed on only when it is true.
+            if request["beside_ok"] == true {
+                asked["beside_ok"] = json!(true);
+            }
         }
         "back" => {
             kind(&mut asked)?;
@@ -302,8 +311,11 @@ impl Storage {
             .one
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if self.unfinished() {
-            return refuse("E47", UNFINISHED);
+        // "Try again" and "Give it up" are for the unfinished change only; every other job
+        // waits for it (T1-20: never a lock for good).
+        let way_on = matches!(asked["job"].as_str(), Some("retry" | "give_up"));
+        if self.unfinished() != way_on {
+            return refuse("E47", if way_on { NOTHING_WAITS } else { UNFINISHED });
         }
         if self.running() || self.waiting() {
             return refuse("E47", fact("busy"));
@@ -397,6 +409,8 @@ pub fn data_kinds(cfg: &Value, look: &Value) -> Vec<Value> {
                 "measured_at": size["at"].as_f64(),
                 "old_copy": old,
                 "targets": look["targets"][kind].as_array().cloned().unwrap_or_default(),
+                // Backed up on the drive it is on (the last look; the backups page's "same drive").
+                "same_drive": look["same_drive"].as_array().is_some_and(|k| k.iter().any(|v| v.as_str() == Some(kind))),
             })
         })
         .collect()
@@ -504,6 +518,23 @@ mod tests {
             .unwrap(),
             json!({"job": "move", "kind": "photos", "to": "d3"})
         );
+        // The tick for a move that backs a kind up on its own drive goes on; only true.
+        assert_eq!(
+            checked(
+                "app_data_move",
+                &json!({"kind": "photos", "to": "d3", "beside_ok": true})
+            )
+            .unwrap(),
+            json!({"job": "move", "kind": "photos", "to": "d3", "beside_ok": true})
+        );
+        assert_eq!(
+            checked(
+                "app_data_move",
+                &json!({"kind": "photos", "to": "d3", "beside_ok": "yes"})
+            )
+            .unwrap(),
+            json!({"job": "move", "kind": "photos", "to": "d3"})
+        );
         for to in ["d2", "d100", "d03", "/mnt/x", "hdd"] {
             assert!(
                 checked("app_data_move", &json!({"kind": "photos", "to": to})).is_err(),
@@ -583,7 +614,15 @@ mod tests {
             .unwrap()
             .contains("Restart the server"));
         assert!(s.job()["unfinished"] == true);
+        // T1-20: "Try again" and "Give it up" are the way on past it, never a lock for good.
+        assert_eq!(checked("app_data_retry", &json!({"x": 1})).unwrap(), json!({"job": "retry"}));
+        assert_eq!(checked("app_data_give_up", &json!({})).unwrap(), json!({"job": "give_up"}));
+        assert_eq!(s.start("app_data_retry", &json!({}))["ok"], true);
+        fs::remove_file(root.join("run/request.json")).unwrap();
+        assert_eq!(s.start("app_data_give_up", &json!({}))["ok"], true);
+        fs::remove_file(root.join("run/request.json")).unwrap();
         fs::remove_file(root.join("state/journal.json")).unwrap();
+        assert_eq!(s.start("app_data_retry", &json!({}))["error"], "E47", "nothing to try again");
         assert_eq!(s.start("app_storage_look", &json!({}))["ok"], true);
         let _ = fs::remove_dir_all(&root);
     }
@@ -651,5 +690,11 @@ mod tests {
         assert_eq!(row("backups")["place_words"], "Media and backups drive");
         assert_eq!(row("cloud")["bytes"], Value::Null);
         assert_eq!(row("cloud")["targets"], json!([]));
+        assert_eq!(row("photos")["same_drive"], false);
+        let look = json!({"same_drive": ["photos"]});
+        let rows = data_kinds(&cfg, &look);
+        let same = |k: &str| rows.iter().find(|r| r["kind"] == k).unwrap()["same_drive"].clone();
+        assert_eq!(same("photos"), true, "the look says the photos are backed up on their own drive");
+        assert_eq!(same("music"), false);
     }
 }

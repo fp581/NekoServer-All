@@ -6405,6 +6405,9 @@ function driveOutcome(job) {
   if (j.working) {
     return ['starting', 'Working on it…', text(j.step_words)];
   }
+  if (j.unfinished && r.state === 'failed') {
+    return ['fail', 'Not finished', text(r.message)];
+  }
   if (j.unfinished) {
     return [
       'warning',
@@ -6743,6 +6746,10 @@ function moveDialog(k, busy) {
       const go = button(
         'Move here',
         () => {
+          if (besideTick(t)) {
+            besideDialog(k, t);
+            return;
+          }
           $('dialog').close();
           void drivesChange(
             'data-move',
@@ -6824,9 +6831,60 @@ function oldCopyRow(k, busy, signed) {
   }
   return row;
 }
+/* Where a kind is, as its card says it: [state, label, words or null]. A kind backed up on
+ * the drive it is on says so, in the backups page's words (storage_jobs.py beside_now). */
+const SAME_DRIVE_WORDS =
+  'Its backup is on the same drive: it protects against a mistake, not against losing that drive.';
+// The weekly USB copy holds the photos, not the music (backup_plan.offline_row).
+const SAME_DRIVE_LAST = {
+  photos: ' Only the weekly copy on the USB drive is on another drive.',
+  music: ' Music is not in the weekly USB copy.'
+};
+function kindPlace(k) {
+  const where = text(k.place_words, 'Not known');
+  return k.same_drive === true
+    ? ['warning', where + ' · same drive as its backup', SAME_DRIVE_WORDS + (SAME_DRIVE_LAST[k.kind] || '')]
+    : ['pass', where, null];
+}
+/* A move that backs a kind up on its own drive needs its own tick (storage_jobs.py). */
+function besideTick(t) {
+  return words(object(t).beside).length > 0;
+}
+function besideDialog(k, t) {
+  const tick = el('input');
+  tick.type = 'checkbox';
+  tick.id = 'drive-beside-ack';
+  const label = el('label', 'field check', 'I understand: their backup would be on the same drive as them.');
+  label.prepend(tick);
+  const go = button(
+    'Move here',
+    () => {
+      $('dialog').close();
+      void drivesChange(
+        'data-move',
+        { kind: k.kind, to: t.to, beside_ok: true },
+        'Moving your ' + text(k.words).toLowerCase() + '…'
+      );
+    },
+    'button small'
+  );
+  go.disabled = true;
+  tick.addEventListener('change', () => {
+    go.disabled = !tick.checked;
+  });
+  openDialog('MOVE ' + text(k.words, 'data').toUpperCase(), 'Move to ' + text(t.words, t.to) + '?', [
+    el('p', '', text(t.beside_words)),
+    label,
+    go
+  ]);
+}
 function kindCard(k, busy, signed, outcome) {
   const card = el('article', 'card drive-kind');
-  card.append(cardHeading(text(k.words, k.kind), badge('pass', text(k.place_words, 'Not known'))));
+  const [placeState, placeLabel, placeWords] = kindPlace(k);
+  card.append(cardHeading(text(k.words, k.kind), badge(placeState, placeLabel)));
+  if (placeWords) {
+    card.append(hint(placeWords));
+  }
   card.append(
     el(
       'p',
@@ -6919,6 +6977,30 @@ function mirrorCard(a, look, busy) {
   }
   return card;
 }
+/* A change that could not be finished: "Try again" and "Give it up" (T1-20). */
+function stuckActions(job) {
+  const j = object(job);
+  return j.unfinished === true && j.working !== true;
+}
+function stuckButtons() {
+  const actions = el('div', 'update-actions');
+  actions.append(
+    button('Try again', () => void drivesChange('data-retry', {}, 'Trying the change again…')),
+    button(
+      'Give it up',
+      () =>
+        confirmDialog(
+          'DRIVES',
+          'Give up this change?',
+          'What is done stays, and what is not is said. Work that needs a drive that is away is done once it is back.',
+          'Give it up',
+          () => void drivesChange('data-give-up', {}, 'Giving up the change…')
+        ),
+      'button small danger'
+    )
+  );
+  return actions;
+}
 function drivesOutcomeBox(job) {
   const said = driveOutcome(job);
   if (!said) {
@@ -6937,6 +7019,9 @@ function drivesOutcomeBox(job) {
     box.append(hint('You can close this page: the change goes on, and the page shows how it ends.'));
   } else if (r.advice && level !== 'pass') {
     box.append(el('h4', '', 'What to do'), longText('', text(r.advice)));
+  }
+  if (stuckActions(job)) {
+    box.append(stuckButtons());
   }
   if (!job.working && numeric(r.finished_at) && r.finished_at > 0) {
     box.append(hint('Ended ' + ago(r.finished_at) + '.'));

@@ -124,6 +124,47 @@ class DrivesPageTests(unittest.TestCase):
             ],
         )
 
+    def test_a_kind_backed_up_on_its_own_drive_says_same_drive(self):
+        said = page(
+            ('kindPlace', {'kind': 'photos', 'place_words': 'Extra drive d3', 'same_drive': True}),
+            ('kindPlace', {'kind': 'photos', 'place_words': 'Extra drive d3', 'same_drive': False}),
+            ('kindPlace', {}),
+            ('kindPlace', {'kind': 'music', 'place_words': 'Extra drive d3', 'same_drive': True}),
+        )
+        self.assertEqual(said[0][:2], ['warning', 'Extra drive d3 · same drive as its backup'])
+        self.assertIn('not against losing that drive', said[0][2])
+        self.assertIn('weekly copy on the USB drive is on another drive', said[0][2])
+        self.assertEqual(said[1], ['pass', 'Extra drive d3', None])
+        self.assertEqual(said[2], ['pass', 'Not known', None])
+        # The weekly USB copy holds no music.
+        self.assertIn('Music is not in the weekly USB copy', said[3][2])
+
+    def test_a_move_beside_the_backups_needs_its_own_tick(self):
+        said = page(
+            ('besideTick', {'beside': ['photos']}),
+            ('besideTick', {'beside': []}),
+            ('besideTick', {}),
+        )
+        self.assertEqual(said, [True, False, False])
+        source = (ROOT / 'dashboard/app.js').read_text()
+        self.assertIn('beside_ok: true', source)
+
+    def test_a_change_that_could_not_be_finished_offers_try_again_and_give_it_up(self):
+        said = page(
+            ('stuckActions', {'working': False, 'unfinished': True, 'result': {'state': 'failed'}}),
+            ('stuckActions', {'working': True, 'unfinished': True}),
+            ('stuckActions', {'working': False, 'unfinished': False}),
+            (
+                'driveOutcome',
+                {'working': False, 'unfinished': True, 'result': {'state': 'failed', 'message': 'Setup stopped.'}},
+            ),
+        )
+        self.assertEqual(said[:3], [True, False, False])
+        self.assertEqual(said[3], ['fail', 'Not finished', 'Setup stopped.'])
+        source = (ROOT / 'dashboard/app.js').read_text()
+        self.assertIn("'data-retry'", source)
+        self.assertIn("'data-give-up'", source)
+
     def test_the_page_is_in_the_menu_and_needs_the_control_service(self):
         html = (ROOT / 'dashboard/index.html').read_text(encoding='utf-8')
         nav = re.findall(r'data-route="([a-z]+)"', html)

@@ -535,6 +535,45 @@ def place_words(place):
     return PLACE_WORDS.get(place) or f'Extra drive {place}'
 
 
+AWAY_WORDS = {
+    'missing': '{drive} is not connected (nothing is mounted at {root}).',
+    'other': '{drive} is not the drive NekoServer set up: another disk is mounted at {root}.',
+}
+PLUG_IN = 'Plug {drive} in (the same drive) and try again.'
+
+
+class Away(RuntimeError):
+    """A drive the job needs is not there (T1-18). Before the commit point the job is
+    undone; after it, the journal stays and the start finishes it without that drive."""
+
+    def __init__(self, place, words):
+        super().__init__(words)
+        self.place, self.advice = place, PLUG_IN.format(drive=place_words(place))
+
+
+def away(config, place):
+    """Why the drive `place` can't be used now, in words, or None (neko_common.drive_away)."""
+    from neko_common import drive_away
+
+    why = drive_away(config, place)
+    if why is None:
+        return None
+    try:
+        root = root_of(config, place)
+    except RuntimeError:
+        root = place
+    return AWAY_WORDS[why].format(drive=place_words(place), root=root)
+
+
+def need(job, *places):
+    """Each drive the next step reads or writes is there, or Away: checked before a job
+    starts and again before each write, as a drive can go away in the middle of a job."""
+    for place in dict.fromkeys(p for p in places if p):
+        words = away(job.config, place)
+        if words:
+            raise Away(place, words)
+
+
 def place_of(config, kind):
     """Where a kind of data is: "ssd", "media" or an extra drive's name."""
     from neko_common import location
@@ -549,6 +588,62 @@ def kind_folders(kind):
     from placement import BACKUP, DATA_FOLDERS
 
     return tuple(DATA_FOLDERS[BACKUP if kind == 'backups' else kind])
+
+
+def inner_names(kind, rel):
+    """The names in a kind's folder `rel` that are another kind's folders (T1-20: the films'
+    library/downloads holds the music's library/downloads/music, which qBittorrent needs on
+    the music's drive): never copied, compared, retired or moved with it, and never in the
+    way of it."""
+    names = set()
+    for other in KINDS:
+        if other != kind:
+            for folder in kind_folders(other):
+                if folder.startswith(rel + '/'):
+                    names.add(folder[len(rel) + 1 :].split('/')[0])
+    return tuple(sorted(names))
+
+
+def kind_skips(kind):
+    """inner_names for each folder of a kind, in the order of kind_folders."""
+    return [inner_names(kind, rel) for rel in kind_folders(kind)]
+
+
+def own_entries(folder, skip=()):
+    """What a kind's folder holds that is its own (another kind's folder in it left out)."""
+    try:
+        return [entry for entry in Path(folder).iterdir() if entry.name not in skip]
+    except OSError:
+        return []
+
+
+def copy_skip(skip):
+    """The keyword migrate.copy and migrate.differences take for `skip` (none when empty)."""
+    return {'skip': skip} if skip else {}
+
+
+def move_folder(source, target, skip=()):
+    """A kind's folder moved on one drive: one rename, or, when another kind's folder is in
+    it or at the target (`skip`), its own entries one by one, the other kind's left where it
+    is. Done again after a power cut, it goes on with what is left."""
+    import stat
+
+    source, target = Path(source), Path(target)
+    if not skip or (not target.exists() and not any((source / name).exists() for name in skip)):
+        os.rename(source, target)
+        return
+    if not target.exists():
+        held = source.stat()
+        target.mkdir()
+        os.chmod(target, stat.S_IMODE(held.st_mode))
+        if os.geteuid() == 0:
+            os.chown(target, held.st_uid, held.st_gid, follow_symlinks=False)
+    for entry in own_entries(source, skip):
+        if (target / entry.name).exists() or (target / entry.name).is_symlink():
+            raise RuntimeError(f'{target / entry.name} is in the way: it is there already.')
+        os.rename(entry, target / entry.name)
+    if not any(source.iterdir()):
+        source.rmdir()
 
 
 def places(config):
@@ -592,8 +687,9 @@ def target_problem(config, kind, to, size):
     root = root_of(config, to)
     if kind == 'backups' and to == 'ssd':
         return 'Your backups are copies of the Apps drive: they must be on another drive.'
-    if not root.is_dir():
-        return f'{place_words(to)} is not connected.'
+    gone = away(config, to)
+    if gone:
+        return gone
     if same_drive(root, root_of(config, place_of(config, kind))):
         return f'It is the drive your {KIND_WORDS[kind]} are on already.'
     need, free = int(size * MARGIN), free_bytes(root)
@@ -608,8 +704,88 @@ def targets(config, kind, size):
         if to == place_of(config, kind):
             continue
         why = target_problem(config, kind, to, size)
-        found.append({'to': to, 'words': place_words(to), 'ok': why is None, 'why_not': why})
+        beside = beside_backups(config, kind, to) if why is None else []
+        found.append(
+            {
+                'to': to,
+                'words': place_words(to),
+                'ok': why is None,
+                'why_not': why,
+                'beside': beside,
+                'beside_words': beside_words(config, beside) if beside else None,
+            }
+        )
     return found
+
+
+# What the backups protect on the drive they go to: the photos (their archive) and the
+# music (its nightly copy). A backup on the drive it protects is no help when that drive
+# is lost (backup_plan.same_drive, the backups page's "same drive").
+BACKED_UP = ('photos', 'music')
+
+
+def backed_up_here(config, kind):
+    """This server backs `kind` up onto the backups' drive."""
+    from neko_common import media_group, music_backed_up
+
+    return media_group(config, 'photos') if kind == 'photos' else music_backed_up(config)
+
+
+def on_one_drive(config, a, b):
+    try:
+        return same_drive(root_of(config, a), root_of(config, b))
+    except (RuntimeError, KeyError, TypeError):
+        return False
+
+
+def beside_backups(config, kind, to):
+    """The kinds that would be backed up on the drive they are on once `kind` is on `to`
+    and are not now: the backups moved onto the photos' or the music's drive, or the
+    photos or the music moved onto the backups' drive."""
+    if kind == 'backups':
+        return [
+            k
+            for k in BACKED_UP
+            if backed_up_here(config, k)
+            and on_one_drive(config, place_of(config, k), to)
+            and not on_one_drive(config, place_of(config, k), place_of(config, 'backups'))
+        ]
+    if kind in BACKED_UP and backed_up_here(config, kind):
+        backups = place_of(config, 'backups')
+        if on_one_drive(config, to, backups) and not on_one_drive(config, place_of(config, kind), backups):
+            return [kind]
+    return []
+
+
+def beside_now(config):
+    """The kinds backed up on the drive they are on now (the Drives page's "same drive")."""
+    backups = place_of(config, 'backups')
+    return [k for k in BACKED_UP if backed_up_here(config, k) and on_one_drive(config, place_of(config, k), backups)]
+
+
+def weekly_copy_drive(config):
+    import placement
+
+    try:
+        return placement.drive_of(config, placement.OFFLINE, placement.DATA)
+    except (KeyError, RuntimeError):
+        return None
+
+
+def beside_words(config, kinds):
+    """What the move window says of a move that backs `kinds` up on their own drive."""
+    names = ' and '.join(KIND_WORDS[k] for k in kinds)
+    said = (
+        f'Your {names} would then be backed up on the drive they are on. That backup protects you from a '
+        'mistake (a file deleted or changed), not from losing that drive.'
+    )
+    if 'photos' in kinds:
+        said += ' The weekly copy on the USB drive is the one that survives losing it' + (
+            '.' if weekly_copy_drive(config) else ', and no USB drive is set up for it yet.'
+        )
+    if 'music' in kinds:
+        said += ' Music is not in the weekly USB copy: losing that drive loses your music and its backup.'
+    return said
 
 
 def old_copies(config, measure=du):
@@ -801,6 +977,7 @@ def look(config, world=None, measure=du, arrays=None):
         'sizes': sizes,
         'targets': kinds_targets,
         'old_copies': copies,
+        'same_drive': beside_now(config),
     }
 
 
@@ -848,7 +1025,7 @@ def left_alone():
     return (*OWN_UNITS, *PAGE_UNITS)
 
 
-JOBS = ('look', 'use', 'release', 'move', 'back', 'delete_old', 'mirror_add')
+JOBS = ('look', 'use', 'release', 'move', 'back', 'delete_old', 'mirror_add', 'retry', 'give_up')
 
 
 class Stop(RuntimeError):
@@ -1023,11 +1200,29 @@ def this_boot():
 # ---- A: add a drive, give one up ------------------------------------------------------------
 
 
-def next_drive(config):
-    from neko_common import extra_drives
+def next_drive(config, fstab=None, record=None):
+    """The next Extra drive's name free of every trace of an earlier one: the settings, the
+    places record, a mount folder, an fstab line (T1-20: a d4 dropped from the settings,
+    its mount left, made the new disk's d4 fail "Wrong filesystem already mounted")."""
+    from modules import storage
+    from neko_common import extra_drives, read_places
 
-    taken = set(extra_drives(config))
-    return next(f'd{n}' for n in range(3, 100) if f'd{n}' not in taken)
+    taken = set(extra_drives(config)) | set((read_places(record) or {}).get('storage') or {})
+    try:
+        lines = Path(fstab or storage.FSTAB).read_text().splitlines()
+    except OSError:
+        lines = []
+    in_fstab = {
+        storage.fstab_folder(line.split()[1])
+        for line in lines
+        if len(line.split()) >= 2 and not line.lstrip().startswith('#')
+    }
+    root = extra_mount_root()
+    for n in range(3, 100):
+        name = f'd{n}'
+        if name not in taken and not os.path.lexists(root / name) and str(root / name) not in in_fstab:
+            return name
+    raise Stop('No name is free for another drive. Nothing was changed.')
 
 
 def chosen_disk(job, minimum):
@@ -1048,7 +1243,7 @@ def use(job):
     """Job A "use": a disk not in use becomes the next extra drive, taken over as it is or
     erased first; mounted at /mnt/nekoserver-drives/<name> by setup run again."""
     row = chosen_disk(job, FACTS['min_bytes'])
-    name = next_drive(job.config)
+    name = next_drive(job.config, record=job.record)
     if job.request['how'] == 'take_over':
         fs = taken_over(row)
         if not fs:
@@ -1173,11 +1368,14 @@ def paths(config, kind, place, base=None):
     return [root / rel for rel in kind_folders(kind)]
 
 
-def gone_or_empty(folder):
+def gone_or_empty(folder, skip=()):
     """Make way for a folder moved in: nothing there, or an empty folder (a mount point
-    setup closed, chattr +i) taken away."""
+    setup closed, chattr +i) taken away; one that holds only another kind's folders (`skip`)
+    stays, and the folder moved in joins them."""
     folder = Path(folder)
     if not folder.exists() and not folder.is_symlink():
+        return
+    if skip and folder.is_dir() and not folder.is_symlink() and any(folder.iterdir()) and not own_entries(folder, skip):
         return
     if folder.is_symlink() or not folder.is_dir() or any(folder.iterdir()):
         raise Stop(f'{folder} is in the way: it is not empty. Nothing was changed.')
@@ -1226,14 +1424,21 @@ def move(job):
     here = place_of(job.config, kind)
     if to == here:
         raise Stop(f'Your {KIND_WORDS[kind]} are on {place_words(to)} already. Nothing was changed.')
+    need(job, here, to)
     size = du(paths(job.config, kind, here))
     problem = target_problem(job.config, kind, to, size)
     if problem:
         raise Stop(problem + ' Nothing was changed.')
+    beside = beside_backups(job.config, kind, to)
+    if beside and job.request.get('beside_ok') is not True:
+        raise Stop(
+            beside_words(job.config, beside) + ' Tick that you understand in the move window to move them anyway. '
+            'Nothing was changed.'
+        )
     staging = root_of(job.config, to) / NEW_COPY.format(kind=kind, id=job.id)
     new = paths(job.config, kind, to, staging)
-    for folder in paths(job.config, kind, to):
-        if folder.exists() and not os.path.ismount(folder) and any(folder.iterdir()):
+    for folder, skip in zip(paths(job.config, kind, to), kind_skips(kind)):
+        if folder.exists() and not os.path.ismount(folder) and own_entries(folder, skip):
             raise Stop(f'{folder} holds files already. Nothing was changed.')
     job.journal('copy', False, staging=str(staging), here=here, to=to, before=steps_working(job.config))
     switch_data(job, kind, here, to, paths(job.config, kind, here), new, size)
@@ -1257,11 +1462,14 @@ def copy_all(job, sources, targets_, size, final):
     import migrate
 
     job.progress('last_copy' if final else 'copy', bytes_total=size)
-    for source, target in zip(sources, targets_):
+    for source, target, skip in zip(sources, targets_, kind_skips(job.request['kind'])):
+        need(job, *job_places(job))
         if not source.exists():
             continue
         target.mkdir(parents=True, exist_ok=True)
-        migrate.copy(source, target, final=final, out=job.out, again=not final and any(target.iterdir()))
+        migrate.copy(
+            source, target, final=final, out=job.out, again=not final and any(target.iterdir()), **copy_skip(skip)
+        )
 
 
 def switch_data(job, kind, here, to, sources, staged, size):
@@ -1280,8 +1488,8 @@ def switch_data(job, kind, here, to, sources, staged, size):
         # there before it finishes (T1-14).
         job.journal('compare', False, copied=[file_count(folder) for folder in staged])
         job.progress('compare')
-        for source, target in zip(sources, staged):
-            if source.exists() and migrate.differences(source, target):
+        for source, target, skip in zip(sources, staged, kind_skips(kind)):
+            if source.exists() and migrate.differences(source, target, **copy_skip(skip)):
                 raise Stop(
                     f'The copy of your {KIND_WORDS[kind]} is not the same as the original. Nothing was changed; '
                     'the apps are running as before.',
@@ -1301,14 +1509,15 @@ def put_in_place(job, kind, here, to, staged):
     point). The old folders stay where they are until setup has run again."""
     job.journal('switch', False)
     job.progress('switch')
+    need(job, *job_places(job))
     if kind == 'backups' and here != 'media':
         unbind_backups(job.config)
-    for target in paths(job.config, kind, to):
-        gone_or_empty(target)
-    for copy_, target in zip(staged, paths(job.config, kind, to)):
+    for target, skip in zip(paths(job.config, kind, to), kind_skips(kind)):
+        gone_or_empty(target, skip)
+    for copy_, target, skip in zip(staged, paths(job.config, kind, to), kind_skips(kind)):
         if copy_.exists():
-            parents_like(target, root_of(job.config, here), root_of(job.config, to))
-            os.rename(copy_, target)
+            parents_like(target, root_of(job.config, here if here in job_places(job) else to), root_of(job.config, to))
+            move_folder(copy_, target, skip)
     # The copy and its new names on the disk before the settings say them (T1-14).
     sync_drives(root_of(job.config, to), root_of(job.config, here))
     was = (job.config.get('locations') or {}).get(kind)
@@ -1362,17 +1571,96 @@ def rebind_backups(config, out=print):
 
 def retire_old(job, kind, here):
     """The old folders renamed into one old copy, out of every app's way."""
-    old = root_of(job.config, here) / OLD_NAME.format(kind=kind, id=job.id)
-    for folder, rel in zip(paths(job.config, kind, here), kind_folders(kind)):
-        if folder.exists() and not os.path.ismount(folder):
-            (old / rel).parent.mkdir(parents=True, exist_ok=True)
-            os.rename(folder, old / rel)
+    if away(job.config, here):
+        # Its folders are retired when it is back (T1-18): nothing is written on it now.
+        wait_for(job.state, {'job': 'retire', 'kind': kind, 'here': here, 'id': job.id})
+    else:
+        retire_folders(job.config, kind, here, job.id)
     staging = Path(job.undo().get('staging', ''))
     if staging.name.startswith('nekoserver-new-') and staging.is_dir():
         # Only its empty folders: what is still in it was never put in place, and may be the
         # only copy (T1-14: a lost rename left the files there, and they were deleted).
         if not remove_empty(staging):
             job.out(f'{staging} still holds files, so it is kept.')
+
+
+def retire_folders(config, kind, here, id_):
+    old = root_of(config, here) / OLD_NAME.format(kind=kind, id=id_)
+    for folder, rel, skip in zip(paths(config, kind, here), kind_folders(kind), kind_skips(kind)):
+        if folder.exists() and not os.path.ismount(folder) and (not skip or own_entries(folder, skip)):
+            (old / rel).parent.mkdir(parents=True, exist_ok=True)
+            move_folder(folder, old / rel, skip)
+
+
+def job_places(job):
+    """The drives a move or a "back" reads or writes now: both, or only the one it goes to
+    when it leaves a drive that is lost (a "Move back" from it)."""
+    undo = job.undo()
+    if undo.get('here_away'):
+        return [undo.get('to')]
+    return [p for p in (undo.get('here'), undo.get('to')) if p]
+
+
+WAITING = 'waiting.json'
+
+
+def delete_waits(config, undo):
+    """The waiting entry of an old copy's delete: the folder, and the drive that holds it
+    (the one it is deleted on, and only there, once it is back)."""
+    from neko_common import place_holding
+
+    deleting = undo.get('deleting', '')
+    return {'job': 'delete_old', 'deleting': deleting, 'place': place_holding(config, Path(deleting).parent)}
+
+
+def wait_for(state, entry):
+    """Work kept for a drive that is away (its old folders retired, an old copy deleted),
+    done when it is back (waiting_work); it never holds up another job."""
+    entries = waiting(state)
+    if entry not in entries:
+        write_state(WAITING, {'entries': [*entries, entry]}, state)
+
+
+def waiting(state=None):
+    return list((read_state(WAITING, state) or {}).get('entries') or [])
+
+
+def waiting_work(config, state=None, out=print):
+    """What waits for a drive that is back now, done; the rest kept."""
+    kept = []
+    for entry in waiting(state):
+        place = entry.get('here') or entry.get('place')
+        try:
+            if not place or away(config, place):
+                kept.append(entry)
+                continue
+            do_waiting(config, entry, place)
+        except (OSError, RuntimeError, KeyError) as error:
+            out(f'What waited for {place} could not be done yet: {error}')
+            kept.append(entry)
+    if kept:
+        write_state(WAITING, {'entries': kept}, state)
+    elif read_state(WAITING, state) is not None:
+        (Path(state or STATE) / WAITING).unlink(missing_ok=True)
+
+
+def do_waiting(config, entry, place):
+    """One waiting entry done, its drive `place` there."""
+    import shutil
+
+    from neko_common import place_holding
+
+    if entry.get('job') == 'retire' and place_of(config, entry['kind']) != place:
+        retire_folders(config, entry['kind'], place, entry['id'])
+    elif entry.get('job') == 'delete_old':
+        gone = Path(entry.get('deleting', ''))
+        # Only the folder this job named, on the drive it was on (review of cdcbc14).
+        if (
+            gone.name.startswith('nekoserver-deleting-')
+            and place_holding(config, gone.parent) == place
+            and gone.exists()
+        ):
+            shutil.rmtree(gone)
 
 
 def remove_empty(folder):
@@ -1441,6 +1729,10 @@ def undo_lost_switch(job, kind, here):
         job.journal('lost', True, lost_undone=True)
 
 
+AWAY_LOST_WORDS = (
+    '{gone} So your {kind} stay on {here}, as before the move to it. What the apps wrote there after the '
+    'switch stays on {to}.'
+)
 LOST_WORDS = (
     'The power went off just as your {kind} were being switched to {to}, and the copy there did not survive it. '
     'They stay on {here}, as before. Nothing was changed.'
@@ -1461,9 +1753,11 @@ def finish_lost(job, kind, here):
         also = f' Setup, run again for {place_words(here)}, stopped: {error}'
     finally:
         migrate.start_again(stopped, job.out)
-    kept = job.undo().get('kept')
+    kept, to = job.undo().get('kept'), job.undo()['to']
+    words = AWAY_LOST_WORDS if job.undo().get('away') == to else LOST_WORDS
+    gone = away(job.config, to) or f'{place_words(to)} is not connected.'
     raise Stop(
-        LOST_WORDS.format(kind=KIND_WORDS[kind], to=place_words(job.undo()['to']), here=place_words(here)) + also,
+        words.format(kind=KIND_WORDS[kind], to=place_words(to), here=place_words(here), gone=gone) + also,
         'Move them again from the Drives page.'
         + (f' What was at the new place is kept in {kept}: look there for anything added since.' if kept else ''),
     )
@@ -1475,6 +1769,13 @@ def finish_move(job, kind, here, stopped):
 
     job.journal('start', True)
     job.progress('start')
+    to = job.undo()['to']
+    if away(job.config, to):
+        # The new place went away after the switch: back to the old one, which has it all.
+        job.journal('start', True, away=to)
+        migrate.start_again(stopped, job.out)
+        finish_lost(job, kind, here)
+    gone = away(job.config, here)
     other = None
     try:
         if kind == 'backups':
@@ -1483,8 +1784,9 @@ def finish_move(job, kind, here, stopped):
             retire_old(job, kind, here)
         setup_again(job)
     except Exception as error:  # noqa: BLE001
-        # A refusal of the place undoes the move, never half.
-        if refused_place(job, kind):
+        # A refusal of the place undoes the move, never half; never onto a drive that is
+        # away (T1-18: the "Move back" from a lost drive is the way out).
+        if refused_place(job, kind) and not gone:
             unswitch(job, kind, here, stopped, error)
         other = error
     try:
@@ -1494,6 +1796,13 @@ def finish_move(job, kind, here, stopped):
     finally:
         migrate.start_again(stopped, job.out)
         paused(job)
+    if other and gone:
+        raise Stop(
+            f'Your {KIND_WORDS[kind]} are on {place_words(to)} now. {gone} Setup, run again for the move, '
+            f'stopped: {other}',
+            f'Run setup again (sudo bash install.sh) once {place_words(here)} is back, or once nothing else is on '
+            'it and it is given up on the Drives page.',
+        )
     if other:
         raise Stop(
             f'Your {KIND_WORDS[kind]} are on {place_words(job.undo()["to"])} now and their apps use them there. '
@@ -1603,10 +1912,10 @@ def unswitch(job, kind, here, stopped, why):
     else:
         # Undone at the start already, before Docker (resume): only what an app wrote in a
         # new folder since (one its record still named) is added, nothing deleted.
-        for old, new in zip(paths(job.config, kind, here), paths(job.config, kind, to)):
-            if new.is_dir() and not os.path.ismount(new) and any(new.iterdir()):
+        for old, new, skip in zip(paths(job.config, kind, here), paths(job.config, kind, to), kind_skips(kind)):
+            if new.is_dir() and not os.path.ismount(new) and own_entries(new, skip):
                 old.mkdir(parents=True, exist_ok=True)
-                migrate.copy(new, old, out=job.out)
+                migrate.copy(new, old, out=job.out, **copy_skip(skip))
     also = ''
     try:
         setup_again(job)
@@ -1632,15 +1941,16 @@ def unswitch_files(job, kind, here):
     import migrate
 
     to = job.undo()['to']
+    need(job, here)
     if kind == 'backups' and to != 'media':
         forward = json.loads(json.dumps(job.config))
         apply_change(forward, [['locations', kind, to]])
         unbind_backups(forward)
     unretire(job, kind, here)
-    for old, new in zip(paths(job.config, kind, here), paths(job.config, kind, to)):
-        if new.is_dir() and not os.path.ismount(new):
+    for old, new, skip in zip(paths(job.config, kind, here), paths(job.config, kind, to), kind_skips(kind)):
+        if not away(job.config, to) and new.is_dir() and not os.path.ismount(new):
             old.mkdir(parents=True, exist_ok=True)
-            migrate.copy(new, old, final=True, out=job.out)
+            migrate.copy(new, old, final=True, out=job.out, **copy_skip(skip))
     sync_drives(root_of(job.config, here))
     apply_change(job.config, job.undo()['change'])
     job.save_settings()
@@ -1651,11 +1961,14 @@ def unswitch_files(job, kind, here):
 
 def unretire(job, kind, here):
     """Folders retired before setup ran (the backups') given their places back."""
+    if away(job.config, here):
+        return
     old = root_of(job.config, here) / OLD_NAME.format(kind=kind, id=job.id)
-    for folder, rel in zip(paths(job.config, kind, here), kind_folders(kind)):
-        if not folder.exists() and (old / rel).exists():
+    for folder, rel, skip in zip(paths(job.config, kind, here), kind_folders(kind), kind_skips(kind)):
+        free = not own_entries(folder, skip) if skip else not folder.exists()
+        if free and (old / rel).exists():
             folder.parent.mkdir(parents=True, exist_ok=True)
-            os.rename(old / rel, folder)
+            move_folder(old / rel, folder, skip)
     if old.is_dir():
         for left in sorted((p for p in old.rglob('*') if p.is_dir()), key=lambda p: len(p.parts), reverse=True):
             if not any(left.iterdir()):
@@ -1671,17 +1984,26 @@ def undo_move(job):
     saved, switching = journal.get('undo', {}), journal.get('phase') in ('switch', 'unswitch', 'lost')
     staging = Path(saved.get('staging', ''))
     kind, to, here = job.request['kind'], saved.get('to'), saved.get('here')
-    if to and switching:
-        for copy_, target in zip(paths(job.config, kind, to, staging), paths(job.config, kind, to)):
-            if target.exists() and not os.path.ismount(target) and not copy_.exists():
-                copy_.parent.mkdir(parents=True, exist_ok=True)
-                os.rename(target, copy_)
+    # Nothing on a new place that is away: what was copied there stays in its
+    # nekoserver-new- folder, which no app uses (T1-18).
+    there = not (to and away(job.config, to))
+    if to and switching and there:
+        take_out_of_place(job, kind, to, staging)
     if kind == 'backups' and here not in (None, 'media') and switching:
         rebind_backups(job.config, job.out)
-    if job.action == 'move' and staging.name.startswith('nekoserver-new-') and staging.is_dir():
+    if there and job.action == 'move' and staging.name.startswith('nekoserver-new-') and staging.is_dir():
         drop_staging(job, staging, journal.get('phase') == 'lost')
     if job.action == 'back':
         restore_back_copy(job, journal)
+
+
+def take_out_of_place(job, kind, to, staging):
+    """The new copy taken out of the apps' places again, into its staging folder."""
+    for copy_, target, skip in zip(paths(job.config, kind, to, staging), paths(job.config, kind, to), kind_skips(kind)):
+        ours = own_entries(target, skip) if skip else not copy_.exists()
+        if target.exists() and not os.path.ismount(target) and ours:
+            copy_.parent.mkdir(parents=True, exist_ok=True)
+            move_folder(target, copy_, skip)
 
 
 def drop_staging(job, staging, lost):
@@ -1712,9 +2034,22 @@ def back(job):
     kind = job.request['kind']
     found = old_copy(job)
     here, to = place_of(job.config, kind), found['place']
+    need(job, to)
+    lost = away(job.config, here)
     staging = root_of(job.config, to) / NEW_COPY.format(kind=kind, id=job.id)
-    job.journal('copy', False, staging=str(staging), here=here, to=to, before=steps_working(job.config))
+    job.journal(
+        'copy', False, staging=str(staging), here=here, to=to, before=steps_working(job.config), here_away=bool(lost)
+    )
     os.rename(found['path'], staging)
+    if lost:
+        # The way out when the drive they were moved to is lost (T1-18): the old copy is put
+        # back as it is, and nothing is read or written on the lost drive.
+        switch_data(job, kind, here, to, [], paths(job.config, kind, to, staging), 0)
+        return (
+            f'Your {KIND_WORDS[kind]} are back on {place_words(to)}, as the old copy had them. {lost} What was '
+            f'added to them there after the move is not in it; it stays on {place_words(here)} if that drive '
+            'comes back.'
+        )
     size = du(paths(job.config, kind, here))
     switch_data(job, kind, here, to, paths(job.config, kind, here), paths(job.config, kind, to, staging), size)
     return (
@@ -1729,6 +2064,7 @@ def delete_old(job):
     import shutil
 
     found = old_copy(job)
+    need(job, found['place'])
     if not same_words(job.request.get('confirm', ''), found['delete_words']):
         raise Stop('The words typed do not match. Nothing was deleted.', f'Type exactly: {found["delete_words"]}')
     gone = Path(found['path']).with_name(DELETING.format(kind=found['kind'], id=found['copy']))
@@ -1754,14 +2090,31 @@ def mirror_context(job):
         done = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, check=False)
         return done.returncode, done.stdout + done.stderr
 
-    return mirror_add.Context(
-        run=ran,
-        erase=lambda *given, **named: erase(*given, config=job.config, **named),
-        refused=Refused,
-        journal=lambda phase, committed=False, undo=None: job.journal(phase, committed, **(undo or {})),
-        progress=job.progress,
-        clear=lambda: (job.state / JOURNAL).unlink(missing_ok=True),
-    )
+    import inspect
+
+    named = {
+        'run': ran,
+        'erase': lambda *given, **more: erase(*given, config=job.config, **more),
+        'refused': Refused,
+        'journal': lambda phase, committed=False, undo=None: job.journal(phase, committed, **(undo or {})),
+        'progress': job.progress,
+        'clear': lambda: (job.state / JOURNAL).unlink(missing_ok=True),
+    }
+    # T1-18 for job D (T2, 57eb40c): the mirror's drive checked before the erase, the add
+    # and a cut-off finish; given to a mirror_add that takes it.
+    takes = inspect.signature(mirror_add.Context).parameters.values()
+    if any(p.name == 'away' or p.kind is inspect.Parameter.VAR_KEYWORD for p in takes):
+        named['away'] = lambda folder: mirror_drive_away(job.config, folder)
+    return mirror_add.Context(**named)
+
+
+def mirror_drive_away(config, folder):
+    """None when the drive that holds `folder` (a mirror's mount) is there and the one the
+    settings name; "missing" or "other" when not; None for a folder on no drive of theirs."""
+    from neko_common import drive_away, place_holding
+
+    place = place_holding(config, folder)
+    return drive_away(config, place) if place else None
 
 
 def mirror_job(job):
@@ -1809,15 +2162,120 @@ def run_request(request, config, settings_files, state=None, folder=None, out=pr
         write_state(LOOK, look(config), job.state)
         (job.folder / PROGRESS).unlink(missing_ok=True)
         return 0
-    if read_state(JOURNAL, job.state):
-        job.result('failed', 'A job that was cut off is not finished yet.', 'It is finished at the next start.')
+    stuck = read_state(JOURNAL, job.state)
+    if job.action in ('retry', 'give_up'):
+        if not stuck:
+            job.result('failed', 'No job is waiting to be finished. Nothing was changed.')
+            return 1
+        return (retry if job.action == 'retry' else give_up)(job, stuck)
+    if stuck:
+        job.result('failed', STUCK_WORDS, STUCK_ADVICE)
         return 1
     held = hold_operation(OPERATION_LOCK)
     if held is None:
         job.result('failed', FACTS.get('busy', 'Another job is at work.'), 'Try again later.')
         return 1
     with held:
+        waiting_work(job.config, job.state, job.out)
         return worked(job)
+
+
+STUCK_WORDS = 'A job that was cut off is not finished yet.'
+STUCK_ADVICE = (
+    'It is finished at the next start, or now with "Try again" (once its drives are back), or "Give it up": '
+    'what is done stays, and the rest is said.'
+)
+
+
+def retry(job, stuck):
+    """A job the start could not finish, tried again now (its drives back): the start's own
+    steps, the resume then the finish, in this run, under the operation lock and with the
+    apps stopped, as at the start before Docker (review of cdcbc14: the resume copies the
+    new place back and deletes the staging, and moves folders the apps use)."""
+    import migrate
+    from neko_common import OPERATION_LOCK, hold_operation
+
+    held = hold_operation(OPERATION_LOCK)
+    if held is None:
+        job.result('failed', FACTS.get('busy', 'Another job is at work.'), 'Try again later.')
+        return 1
+    with held:
+        try:
+            stopped = migrate.stop_writers(out=job.out, note=lambda units: None, own=left_alone())
+        except RuntimeError as error:
+            job.result('failed', f'{error}. Nothing was changed.', 'Try again later.')
+            return 1
+        try:
+            code = resume(job.config, job.settings_files, job.state, job.folder, job.out, hand_off=False)
+            saved = read_state(JOURNAL, job.state)
+            if code or not saved or not saved.get('committed'):
+                return code
+            config = job.config
+            return finish_held(Job(saved['request'], config, job.settings_files, job.state, job.folder, job.out), saved)
+        finally:
+            migrate.start_again(stopped, out=job.out)
+
+
+def give_up(job, stuck):
+    """A job that can not be finished (its drive lost) let go, under the operation lock:
+    before its commit point it is undone as far as the drives that are there allow; after
+    it the settings stay as the switch wrote them, and what it could not do is said (and
+    done later when it needs a drive that is away)."""
+    from neko_common import OPERATION_LOCK, hold_operation
+
+    held = hold_operation(OPERATION_LOCK)
+    if held is None:
+        job.result('failed', FACTS.get('busy', 'Another job is at work.'), 'Try again later.')
+        return 1
+    with held:
+        cut = Job(stuck['request'], job.config, job.settings_files, job.state, job.folder, job.out)
+        undo, kind = stuck.get('undo') or {}, (stuck.get('request') or {}).get('kind')
+        places = cut_places(job.config, stuck)
+        if places and not any(away(job.config, place) for place in places):
+            # Given up with every drive there, the settings would go back without what the
+            # apps wrote at the new place (review of cdcbc14): this is for a lost drive.
+            job.result('failed', 'Its drives are all here: use "Try again". Nothing was changed.', STUCK_ADVICE)
+            return 1
+        if not stuck.get('committed'):
+            undo_cut_off(cut, stuck)
+            words = 'The job was given up and undone: everything is as it was before it.'
+        elif cut.action in ('move', 'back'):
+            cut.reapply(stuck)
+            if undo.get('here') and place_of(cut.config, kind) != undo['here']:
+                wait_for(cut.state, {'job': 'retire', 'kind': kind, 'here': undo['here'], 'id': cut.id})
+            words = (
+                f'The job was given up. Your {KIND_WORDS.get(kind, kind)} are on '
+                f'{place_words(place_of(cut.config, kind))}, as the settings say. Run setup again '
+                '(sudo bash install.sh) so every app uses that place.'
+            )
+        elif cut.action == 'delete_old':
+            wait_for(cut.state, delete_waits(cut.config, undo))
+            words = 'The job was given up. The old copy is deleted when its drive is back.'
+        elif cut.action == 'use' and undo.get('drive'):
+            words = give_up_drive(cut, undo['drive'])
+        else:
+            cut.reapply(stuck)
+            words = 'The job was given up. Run setup again (sudo bash install.sh) so every app is as the settings say.'
+        cut.result('failed', words)
+        cut.done()
+    return 1
+
+
+def give_up_drive(job, drive):
+    """An added drive whose setup never worked, given up (T1-20): out of the settings and
+    the record, its own fstab line taken out and unmounted; the disk is left as it is."""
+    if any(place_of(job.config, kind) == drive for kind in KINDS):
+        job.reapply(read_state(JOURNAL, job.state))
+        return f'The job was given up. {place_words(drive)} holds your data now, so it stays in the settings.'
+    (job.config.get('storage') or {}).pop(drive, None)
+    job.save_settings()
+    drop_fstab_line(extra_mount_root() / drive)
+    if os.path.ismount(extra_mount_root() / drive):
+        run(['umount', str(extra_mount_root() / drive)])
+    return (
+        f'The job was given up: {place_words(drive)} was not added. Its disk is left as it is; '
+        'add it again from the Drives page.'
+    )
 
 
 def stopped_state(saved):
@@ -1849,6 +2307,14 @@ def worked(job):
         job.result('failed', f'{refused} Nothing was changed.')
         job.done()
         return 1
+    except Away as gone:
+        saved = read_state(JOURNAL, job.state)
+        if saved and saved.get('committed'):
+            job.result('failed', f'{gone} The job is finished at the next start, without it if it is still away.')
+            return 1
+        job.result('failed', f'{gone} Nothing was changed.', gone.advice)
+        job.done()
+        return 1
     except Exception as error:  # noqa: BLE001
         # Said on the page; the journal decides what the boot does.
         saved = read_state(JOURNAL, job.state)
@@ -1870,19 +2336,21 @@ def mirror_result(job, fields, power_cut=False):
     return 0 if fields['state'] in ('done', 'resumed') else 1
 
 
-def resume(config, settings_files, state=None, folder=None, out=print):
+def resume(config, settings_files, state=None, folder=None, out=print, hand_off=True):
     """At the start of the computer, before Docker: a job a power cut stopped is undone
     (before its commit point) or finished (after it). A finish that needs Docker (setup run
     again) is handed to a unit that runs after it."""
+    waiting_work(config, state, out)
     saved = read_state(JOURNAL, state)
     if not saved:
         return 0
     job = Job(saved['request'], config, settings_files, state, folder, out)
     job.started = saved.get('started_at', job.started)
-    missing = missing_drive(config, saved)
-    if missing:
-        job.result('failed', f'The job is finished when {place_words(missing)} is back.', 'Plug it in and restart.')
-        return 1
+    gone = [p for p in cut_places(config, saved) if away(config, p)]
+    if gone:
+        saved = without_drive(job, saved, gone)
+        if saved is None:
+            return 1 if read_state(JOURNAL, job.state) else 0
     if job.action == 'mirror_add' and not saved.get('committed'):
         import mirror_add
 
@@ -1891,6 +2359,18 @@ def resume(config, settings_files, state=None, folder=None, out=print):
         job.result('undone', UNDONE_WORDS.get(job.action, UNDONE_WORDS['move']), power_cut=True)
         job.done()
         return 0
+    saved = committed_before_docker(job, saved)
+    if job.action in ('move', 'back', 'use', 'mirror_add'):
+        if hand_off:
+            hand_to_finish(settings_files)
+        return 0
+    finish_cut_off(job, saved)
+    return 0
+
+
+def committed_before_docker(job, saved):
+    """A committed job's part that must be done before an app starts: a lost switch undone
+    (T1-14), the settings as the journal has them, an undo's files copied back."""
     if job.action in ('move', 'back') and (saved.get('phase') == 'lost' or switch_lost(job, saved)):
         # Before Docker, so no app starts on the new place that lost its files (T1-14).
         undo_lost_switch(job, job.request['kind'], saved['undo']['here'])
@@ -1898,24 +2378,25 @@ def resume(config, settings_files, state=None, folder=None, out=print):
     job.reapply(read_state(JOURNAL, job.state) or saved)
     if saved.get('phase') == 'unswitch' and job.action in ('move', 'back') and not saved['undo'].get('files_back'):
         unswitch_files(job, job.request['kind'], saved['undo']['here'])
-    if job.action in ('move', 'back', 'use', 'mirror_add'):
-        run(
-            [
-                'systemd-run',
-                '--no-block',
-                f'--unit={FINISH_UNIT}',
-                '--property=After=docker.service',
-                '--property=TimeoutStartSec=infinity',
-                sys_executable(),
-                '-Es',
-                str(Path(__file__).resolve()),
-                'finish',
-                *[f'--config={p}' for p in settings_files],
-            ]
-        )
-        return 0
-    finish_cut_off(job, saved)
-    return 0
+    return saved
+
+
+def hand_to_finish(settings_files):
+    """The finish that needs Docker (setup run again), in a unit that runs after it."""
+    run(
+        [
+            'systemd-run',
+            '--no-block',
+            f'--unit={FINISH_UNIT}',
+            '--property=After=docker.service',
+            '--property=TimeoutStartSec=infinity',
+            sys_executable(),
+            '-Es',
+            str(Path(__file__).resolve()),
+            'finish',
+            *[f'--config={p}' for p in settings_files],
+        ]
+    )
 
 
 UNDONE_WORDS = {
@@ -1953,15 +2434,69 @@ def sys_executable():
     return sys.executable
 
 
-def missing_drive(config, saved):
-    """A drive the cut-off job needs that is not there now."""
-    for place in {saved.get('undo', {}).get('here'), saved.get('undo', {}).get('to')} - {None}:
-        try:
-            if not root_of(config, place).is_dir():
-                return place
-        except RuntimeError:
-            return place
-    return None
+def cut_places(config, saved):
+    """The drives a cut-off job still needs: a move's or a "back"'s two (one, leaving a
+    lost drive), the drive an old copy is deleted on."""
+    from neko_common import place_holding
+
+    undo = saved.get('undo') or {}
+    if saved.get('job') == 'delete_old':
+        return [p for p in (place_holding(config, Path(undo.get('deleting') or '/').parent),) if p]
+    if saved.get('job') not in ('move', 'back'):
+        return []
+    if undo.get('here_away'):
+        return [undo['to']] if undo.get('to') else []
+    return [p for p in (undo.get('here'), undo.get('to')) if p]
+
+
+def without_drive(job, saved, gone):
+    """At the start, a cut-off job whose drive is away (T1-18), done as far as the drives
+    that are there allow, never waiting on the one that is not: undone before its commit
+    point; after it finished on the drive that is there (forward when the drive it left is
+    away, back when the one it went to is); a delete kept for the drive. The journal for
+    the resume to go on with, or None when the job ended here (or must wait for both)."""
+    undo, words = saved.get('undo') or {}, ' '.join(away(job.config, p) for p in gone)
+    here, to = undo.get('here'), undo.get('to')
+    if not saved.get('committed'):
+        undo_cut_off(job, saved)
+        job.result('undone', f'The power went off during the job. {words} Nothing was changed.', power_cut=True)
+        job.done()
+        return None
+    if job.action == 'delete_old':
+        wait_for(job.state, delete_waits(job.config, undo))
+        job.result('failed', f'{words} The old copy is deleted when it is back.', 'Plug it in.', power_cut=True)
+        job.done()
+        return None
+    if len(gone) > 1 or job.action not in ('move', 'back'):
+        job.result('failed', f'The job is finished when its drives are back. {words}', STUCK_ADVICE, power_cut=True)
+        return None
+    if gone == [here]:
+        if saved.get('phase') in ('unswitch', 'lost'):
+            forward_again(job, saved)
+        job.journal(read_state(JOURNAL, job.state)['phase'], True, here_away=True)
+        return read_state(JOURNAL, job.state)
+    # The drive it went to is away: back to the one it left, which has everything.
+    undo_lost_switch(job, job.request['kind'], here)
+    job.journal('lost', True, away=to)
+    return read_state(JOURNAL, job.state)
+
+
+def forward_again(job, saved):
+    """An undo (unswitch) that has to go to a drive that is lost now turned round: the new
+    folders it had moved out of the way go back to their places, and the switch is kept."""
+    kind, undo = job.request['kind'], saved['undo']
+    to, staging = undo['to'], Path(undo.get('staging', ''))
+    kept = staging.with_name(OLD_NAME.format(kind=kind, id=job.request.get('copy', '')))
+    if job.action == 'back' and not staging.is_dir() and kept.is_dir():
+        os.rename(kept, staging)
+    for copy_, target, skip in zip(paths(job.config, kind, to, staging), paths(job.config, kind, to), kind_skips(kind)):
+        free = not own_entries(target, skip) if skip else not target.exists()
+        if copy_.exists() and free:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            move_folder(copy_, target, skip)
+    forward = [['locations', kind, None if kind == 'backups' and to == 'media' else to]]
+    job.journal('start', True, change=forward, files_back=False)
+    job.reapply(read_state(JOURNAL, job.state))
 
 
 def undo_cut_off(job, saved):
@@ -1975,7 +2510,7 @@ def undo_cut_off(job, saved):
 def restore_back_copy(job, saved):
     """A "back" undone: the old copy it was copying into keeps its old name again."""
     staging = Path(saved['undo'].get('staging', ''))
-    if staging.is_dir():
+    if staging.is_dir() and not away(job.config, saved['undo'].get('to')):
         os.rename(staging, staging.with_name(OLD_NAME.format(kind=job.request['kind'], id=job.request['copy'])))
 
 
@@ -2005,14 +2540,19 @@ def finish_cut_move(job, saved):
     kind, here = job.request.get('kind'), saved['undo']['here']
     if saved.get('phase') == 'lost' or switch_lost(job, saved):
         finish_lost(job, kind, here)
+    if saved['undo'].get('here_away') and saved.get('phase') == 'unswitch':
+        forward_again(job, saved)
+        saved = read_state(JOURNAL, job.state)
     if saved.get('phase') == 'unswitch':
         unswitch(job, kind, here, saved['undo'].get('stopped'), saved['undo'].get('why', ''))
     stopped = migrate.stop_writers(
         out=job.out, note=lambda units: job.journal('start', True, stopped=units), own=left_alone()
     )
-    for old, new in zip(paths(job.config, kind, here), paths(job.config, kind, saved['undo']['to'])):
-        if old.exists() and not os.path.ismount(old) and new.exists():
-            migrate.copy(old, new, final=True, out=job.out)
+    if not away(job.config, here):
+        news = paths(job.config, kind, saved['undo']['to'])
+        for old, new, skip in zip(paths(job.config, kind, here), news, kind_skips(kind)):
+            if old.exists() and not os.path.ismount(old) and new.exists():
+                migrate.copy(old, new, final=True, out=job.out, **copy_skip(skip))
     finish_move(job, kind, here, stopped)
 
 
@@ -2058,7 +2598,7 @@ def finish_held(job, saved):
         write_state(LOOK, look(config), job.state)
         return 0 if state == 'done' else 1
     except Exception as error:  # noqa: BLE001
-        job.result('failed', f'Finishing the job at the start stopped: {error}', 'It is tried again at the next start.')
+        job.result('failed', f'Finishing the job at the start stopped: {error}', STUCK_ADVICE)
         return 1
     job.result('resumed', 'The power went off during the job; it was finished at the start.', power_cut=True)
     job.done()
