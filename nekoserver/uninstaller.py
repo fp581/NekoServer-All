@@ -412,10 +412,25 @@ def newest_drive_record(root='/'):
     return record, name
 
 
+PLACES = 'etc/nekoserver-os/places.json'  # neko_common.PLACES_RECORD, under the system's root
+
+
 def find_settings(root=ROOT, system='/'):
     """(settings, where they came from, in words). my-config.json in this folder first. Without
     it, the drives setup recorded in /etc (newest of DRIVE_RECORDS) on top of the template, so
-    that a fresh download still finds the real mount folders and UUIDs."""
+    that a fresh download still finds the real mount folders and UUIDs. Then the places the
+    Drives page last wrote (neko_common.current_places, read before anything is removed): a
+    my-config.json from before a move never wins silently (T1-16, drill 10)."""
+    settings, source = _found_settings(root, system)
+    if not settings or source.startswith('the template'):
+        return settings, source  # nothing on the drives is removed: no places to take
+    from neko_common import current_places
+
+    settings, line = current_places(settings, Path(system) / PLACES)
+    return settings, source + ('. ' + line if line else '')
+
+
+def _found_settings(root, system):
     mine = _json_object(Path(root) / SETTINGS)
     if mine is not None:
         return mine, str(Path(root) / SETTINGS)

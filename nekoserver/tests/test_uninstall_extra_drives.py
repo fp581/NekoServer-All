@@ -6,6 +6,8 @@ Extra drive is named with what is on it and its size, each choice acts on the ki
 place and says which drive, the old copies are a choice of their own, every drive under
 /mnt/nekoserver-drives goes with the mounts, and no drive is ever formatted or wiped."""
 
+import json
+import os
 import sys
 import tempfile
 import unittest
@@ -236,6 +238,66 @@ class ExtraDriveTests(unittest.TestCase):
         umounts = [call[1] for call in self.system.calls if call[:1] == ['umount']]
         self.assertNotIn(target, umounts)
         self.assertIn(MEDIA + '/my backups', umounts)  # unmounted by the path, not its fstab spelling
+
+
+class StaleSettingsTests(unittest.TestCase):
+    """T1-16 with T1-17's rule: uninstall.sh run from a folder whose my-config.json is from
+    before the moves (even with a fresh time, as unpacking gives it) uses the places the
+    Drives page last wrote (/etc/nekoserver-os/places.json), says so, and writes nothing."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.system = FakeSystem(tmp.name).populate()
+        self.system.drives[D3] = 'eeee-5555'
+        self.system.write(D3 + '/backups/apps/nextcloud.tar')
+        self.system.write(D3 + '/library/movies/film.mkv')
+        self.folder = Path(tmp.name) / 'download'
+        self.folder.mkdir()
+        self.stale = dict(SETTINGS)  # from before the moves: no d3, no locations
+        self.mine = self.folder / 'my-config.json'
+        self.mine.write_text(json.dumps(self.stale))
+        # Only the Extra drives are the record's: the SSD's and the HDD's entries stay the file's.
+        extra = {k: MOVED['storage'][k] for k in ('d3', 'd4')}
+        self.record = self.system.write(
+            '/' + uninstaller.PLACES, json.dumps({'storage': extra, 'locations': MOVED['locations']})
+        )
+        os.utime(self.record, (1, 1))  # older than the stale file: the time never decides
+
+    def test_the_places_the_drives_page_wrote_win_and_are_said(self):
+        settings, source = uninstaller.find_settings(self.folder, self.system.root)
+        self.assertEqual(settings['locations'], MOVED['locations'])
+        self.assertEqual(settings['storage']['d3']['uuid'], 'eeee-5555')
+        self.assertEqual(settings['storage']['data_ssd'], SETTINGS['storage']['data_ssd'])
+        self.assertTrue(source.startswith(str(self.mine) + ". This server's data was moved from the dashboard"))
+        self.assertEqual(json.loads(self.mine.read_text()), self.stale, 'the uninstaller writes no settings')
+        plan = self.system.plan(settings=settings)
+        said = plan.describe({'server', 'backups', 'media'})
+        self.assertIn('remove ' + str(self.system.root) + D3 + '/backups  (', said)
+        self.assertIn('remove ' + str(self.system.root) + D3 + '/library  (', said)
+
+    def test_without_a_record_or_when_it_agrees_the_file_is_used_as_before(self):
+        self.record.unlink()
+        settings, source = uninstaller.find_settings(self.folder, self.system.root)
+        self.assertEqual((settings, source), (self.stale, str(self.mine)))
+        self.mine.write_text(json.dumps(MOVED))
+        self.system.write(
+            '/' + uninstaller.PLACES,
+            json.dumps({'storage': {k: MOVED['storage'][k] for k in ('d3', 'd4')}, 'locations': MOVED['locations']}),
+        )
+        settings, source = uninstaller.find_settings(self.folder, self.system.root)
+        self.assertEqual((settings, source), (MOVED, str(self.mine)))
+
+    def test_the_record_also_corrects_the_drives_setup_recorded(self):
+        self.mine.unlink()
+        self.system.write(
+            '/etc/nekoserver-os/drives.json',
+            json.dumps({k: SETTINGS[k] for k in ('data_mount', 'media_mount', 'storage')}),
+        )
+        settings, source = uninstaller.find_settings(self.folder, self.system.root)
+        self.assertEqual(settings['locations'], MOVED['locations'])
+        self.assertIn("(the drives setup recorded", source)
+        self.assertIn("This server's data was moved from the dashboard", source)
 
 
 if __name__ == '__main__':
