@@ -929,6 +929,16 @@ def keep_report(path, row):
         print(f'The upgrade report could not be written ({exc}); the upgrade goes on', file=sys.stderr)
 
 
+def settings_for_run(path):
+    """The settings, with the places the Drives page recorded when the file is older than
+    them, brought up to date and said (T1-17)."""
+    from neko_common import take_places
+
+    config = read_settings(path)
+    take_places(config, [path])
+    return config
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('action', choices=('run', 'resume'))
@@ -945,7 +955,7 @@ def main():
     if args.action == 'run' and not (args.tag and TAG.fullmatch(args.tag)):
         parser.error('run needs --tag with a release, such as v1.0.0')
     try:
-        config = read_settings(args.config)
+        config = settings_for_run(args.config)
     except RuntimeError as exc:
         print(f'Nothing was upgraded: {exc}', file=sys.stderr)
         return 2

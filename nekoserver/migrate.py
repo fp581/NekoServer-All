@@ -102,7 +102,11 @@ def record(journal=JOURNAL, **fields):
 
 
 def load_settings(settings):
-    return settings_path(settings), read_settings(settings)
+    from neko_common import take_places
+
+    config = read_settings(settings)
+    take_places(config, [settings])  # the Drives page's places (T1-17)
+    return settings_path(settings), config
 
 
 def lsblk():

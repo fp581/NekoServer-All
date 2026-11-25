@@ -40,6 +40,7 @@ from neko_restore import read_at_most
 from neko_common import typed_folder as typed_folder_named
 from neko_common import (
     cards_enabled,
+    take_places,
     nextcloud_enabled,
     OPERATION_LOCK,
     SHARED,
@@ -3679,7 +3680,10 @@ def settings(config_path=None, output=None):
         candidates.append(ROOT / 'config.json')
     for path in candidates:
         if path.is_file():
-            return json.loads(path.read_text())
+            config = json.loads(path.read_text())
+            # The Drives page's places (T1-17); the release's own example stays as it is.
+            take_places(config, [] if path == ROOT / 'config.json' else [path], out=output or print)
+            return config
     raise RuntimeError('Settings file not found: ' + ', '.join(str(p) for p in candidates))
 
 
