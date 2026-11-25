@@ -317,6 +317,24 @@ class DrivesTests(Folder):
         self.assertEqual(json.loads(self.path.read_text())['storage']['d4'], D4)
         self.assertIn('d4', out.getvalue())
 
+    def test_a_drive_setup_gives_up_leaves_the_record(self):
+        """Review of 9e390ba: setup's own "Is this drive permanently unavailable?" -> yes
+        takes the drive out; the record must not bring it back at the next run."""
+        import copy
+
+        import installer
+
+        config = installer.settings_for_run(self.path, apply=True, out=lambda line: None)
+        ctx = installer.Context(config, lambda *a: None, apply=True, config_path=self.path, saved=copy.deepcopy(config))
+        del ctx.config['storage']['d3']
+        ctx.persist_config()
+        self.assertNotIn('d3', json.loads(self.record.read_text())['storage'])
+        again = json.loads(self.path.read_text())
+        self.assertFalse(
+            neko_common.take_places(again, [self.path], out=lambda line: None) and 'd3' in again['storage']
+        )
+        self.assertNotIn('d3', again['storage'])
+
     def test_setup_saving_a_file_without_the_drive_never_drops_it_from_the_record(self):
         import installer
 
