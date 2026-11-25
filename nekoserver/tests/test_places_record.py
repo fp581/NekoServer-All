@@ -214,5 +214,59 @@ class ToolTests(Folder):
         self.assertEqual(config['locations']['backups'], 'd3')
 
 
+# Each place in the code that writes "locations" or a drive under "storage", and why the
+# record stays right with it (T5 on bc4efb8): current_places replaces the file's Extra
+# drives and places as a whole, so a writer that skips the record is undone by the next run.
+WRITERS = {
+    ('acceptance_summary.py', "out['locations'] = moved"): 'a report, not the settings',
+    ('migrate.py', "config['storage'][drive] = record_"): 'the SSD or the media drive only, never in the record',
+    ('modules/dashboard.py', "clean['locations'] = places"): "the dashboard's own copy for the collector",
+    (
+        'modules/network_storage.py',
+        "kept = config.setdefault('storage', {}).setdefault('media_hdd', {})",
+    ): 'the media drive',
+    (
+        'modules/storage.py',
+        "configured = config.setdefault('storage', {})",
+    ): 'setup: saved by persist_config, which records',
+    (
+        'modules/storage.py',
+        "chosen = config.setdefault('locations', {})",
+    ): 'setup: saved by persist_config, which records',
+    (
+        'modules/storage.py',
+        "storage = config.setdefault('storage', {})",
+    ): 'setup: saved by persist_config, which records',
+    ('native_runtime.py', "found['locations'] = config['locations']"): "the runtime's copy (drives.json)",
+    ('neko_common.py', "new['locations'] = json.loads(json.dumps(saved['locations']))"): 'current_places itself',
+}
+
+
+class WritersTests(unittest.TestCase):
+    def test_every_writer_of_the_places_keeps_the_record_right(self):
+        import re
+
+        pattern = re.compile(
+            r"""\[['"]locations['"]\]\s*=[^=]|setdefault\(['"]locations|\[['"]storage['"]\]\[[^]]+\]\s*=[^=]"""
+            r"""|\[['"]storage['"]\]\.update|setdefault\(['"]storage['"]"""
+        )
+        root = Path(__file__).resolve().parents[1]
+        found = set()
+        for path in sorted(root.rglob('*.py')):
+            relative = path.relative_to(root).as_posix()
+            if relative.startswith(('tests/', 'lab/')) or '/tests/' in relative:
+                continue
+            for line in path.read_text(encoding='utf-8').splitlines():
+                if pattern.search(line):
+                    found.add((relative, line.strip()))
+        new = sorted(found - set(WRITERS))
+        self.assertEqual(
+            new,
+            [],
+            'A new writer of "locations" or a drive under "storage": save it through Job.save_settings or '
+            "installer's persist_config (both keep /etc/nekoserver-os/places.json right), then add it here",
+        )
+
+
 if __name__ == '__main__':
     unittest.main()
