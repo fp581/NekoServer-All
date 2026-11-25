@@ -132,6 +132,11 @@ DRIVE_AWAY = (
 )
 NOT_MADE = '{path} is not a folder NekoServer can make (a file or a link is in its place). Nothing was changed.'
 MADE = 'A folder for your {words} on Extra drive {drive} is ready: {path}.'
+# T3-101-3: one there already with files in it is the person's, connected as theirs.
+THEIRS = (
+    '{path} was on the drive already, with files in it, so it is connected as a folder of yours: NekoServer never '
+    'counts it as its own.'
+)
 ONLY_SSD = 'The settings copy on the SSD was saved; {path} was not there to save in, so setup there has the old choice.'
 
 
@@ -608,6 +613,10 @@ def make(config, asked, out):
     for folder in (path.parent, path):
         if os.path.islink(folder) or (os.path.lexists(folder) and not os.path.isdir(folder)):
             raise Refusal(NOT_MADE.format(path=folder))
+    if path.is_dir() and any(path.iterdir()):
+        kinds = add(config, {**asked, 'path': str(path), 'how': 'in_place'}, out)
+        out['notes'].insert(0, THEIRS.format(path=path))
+        return kinds
     uid, gid = existing_media.app_user(config)
     ensure_directory(path.parent, 0o755)
     ensure_directory(path, 0o2775, uid, gid)

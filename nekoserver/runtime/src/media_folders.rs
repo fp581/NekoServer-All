@@ -366,12 +366,35 @@ fn under_roots(path: &str) -> bool {
 }
 /// NekoServer's own folders (and what is inside them): in use already, never offered.
 fn own_folders(cfg: &Value) -> Vec<String> {
-    ["data_mount", "media_mount", "external_backup_mount"]
+    let mut own: Vec<String> = ["data_mount", "media_mount", "external_backup_mount"]
         .iter()
         .filter_map(|key| cfg[*key].as_str())
         .filter(|p| p.starts_with('/') && *p != "/")
         .map(str::to_string)
-        .collect()
+        .collect();
+    // A kind of data the Drives page moved to an Extra drive (1.0.1): its folders there,
+    // as existing_media.own_on_drives refuses them (T3-101-2).
+    let backups = ["backups", "photos/archive"];
+    for what in ["photos", "music", "cloud", "movies", "backups"] {
+        let Some(drive) = cfg["locations"][what].as_str() else {
+            continue;
+        };
+        if !common::extra_drive(cfg, drive) {
+            continue;
+        }
+        let folders: Vec<&str> = if what == "backups" {
+            backups.to_vec()
+        } else {
+            (0..4)
+                .map(|n| common::shared_folder(what, n))
+                .filter(|f| !f.is_empty())
+                .collect()
+        };
+        for folder in folders {
+            own.push(format!("{}/{drive}/{folder}", common::EXTRA_MOUNTS));
+        }
+    }
+    own
 }
 fn is_own(path: &str, own: &[String]) -> bool {
     own.iter()
@@ -845,6 +868,36 @@ mod tests {
         assert_eq!(paths, ["/mnt/big disk", "/mnt/nas", "/run/media/amy/USB"]);
         assert_eq!(offered["folders"][1]["share"], true);
         assert_eq!(offered["more"], false);
+    }
+
+    #[test]
+    fn the_folders_a_move_put_on_an_extra_drive_are_never_offered() {
+        // T3-101-2: photos moved to d4 (and the backups): their folders there are
+        // NekoServer's own, as Media folders refuses them.
+        let cfg = json!({"data_mount": "/srv/nekoserver", "media_mount": "/mnt/nekoserver-media",
+            "storage": {"d4": {"uuid": "x"}, "d5": {"uuid": "y"}},
+            "locations": {"photos": "d4", "backups": "d4", "music": "media", "movies": "d9"}});
+        let own = own_folders(&cfg);
+        for folder in [
+            "/mnt/nekoserver-drives/d4/photos/immich-library",
+            "/mnt/nekoserver-drives/d4/backups",
+            "/mnt/nekoserver-drives/d4/photos/archive",
+        ] {
+            assert!(own.iter().any(|o| o == folder), "{folder}: {own:?}");
+        }
+        assert!(
+            !own.iter()
+                .any(|o| o.contains("/d9/") || o.contains("library/music")),
+            "{own:?}"
+        );
+        let refused = inside(
+            "/mnt/nekoserver-drives/d4/photos/immich-library/x",
+            "",
+            &cfg,
+        );
+        assert_eq!(refused["error"], "E42", "{refused}");
+        assert!(is_own("/mnt/nekoserver-drives/d4/backups/photos", &own));
+        assert!(!is_own("/mnt/nekoserver-drives/d4/films", &own));
     }
 
     #[test]

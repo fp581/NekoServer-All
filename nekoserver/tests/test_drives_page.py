@@ -88,6 +88,7 @@ class DrivesPageTests(unittest.TestCase):
             ('moveWords', ['films', {'state': 'undone', 'paused_seconds': 1}]),
             ('moveWords', ['films', {'state': 'done', 'paused_seconds': -3}]),
             ('moveWords', ['films', {'state': 'done', 'paused_seconds': '9'}]),
+            ('moveWords', ['music', None]),
         )
         plain = (
             'are copied while the apps keep running. For the last step all apps pause and start again by themselves.'
@@ -101,6 +102,25 @@ class DrivesPageTests(unittest.TestCase):
                 f'Your films {plain} Last time that took 1 second.',
                 f'Your films {plain}',
                 f'Your films {plain}',
+                'Your music is' + plain[3:],  # T4-101-3: not "Your music are"
+            ],
+        )
+
+    def test_a_short_e21_while_a_job_works_keeps_the_page_and_its_last_answer(self):
+        # T4-101-2: setup's own dashboard step restarts the control service for 1-2 s in
+        # every run, a Drives job's too; the page wiped what it showed and said E21 alone.
+        self.assertEqual(
+            page(
+                ('drivesReach', [True, None, False]),
+                ('drivesReach', [True, 'E21', True]),
+                ('drivesReach', [True, 'E21', False]),
+                ('drivesReach', [False, None, True]),
+            ),
+            [
+                {'keep': True, 'draw': True, 'ask': True},
+                {'keep': True, 'draw': True, 'ask': False},
+                {'keep': True, 'draw': False, 'ask': False},
+                {'keep': False, 'draw': False, 'ask': False},
             ],
         )
 

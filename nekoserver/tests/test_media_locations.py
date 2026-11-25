@@ -1048,6 +1048,60 @@ class DriveFolderTests(unittest.TestCase):
         again = self.make(downloads=False)
         self.assertEqual(again['state'], 'done', again)
         self.assertTrue((made / 'Alien (1979)').is_dir())
+        # It has files now: connected as the person's, never counted as NekoServer's (T3-101-3).
+        self.assertNotIn('made', self.pc.settings()['placement']['movies']['extra'][0])
+
+    def test_a_folder_of_the_persons_already_there_is_connected_as_theirs_not_as_made(self):
+        # T3-101-3: a taken-over drive's own media/movies, full of the person's films, was
+        # saved as NekoServer's ("Made by NekoServer"), so later jobs could count it as ours.
+        made = self.d4 / 'media' / 'movies'
+        (made / 'Alien (1979)').mkdir(parents=True)
+        made.chmod(0o750)
+        answer = self.make(downloads=False)
+        self.assertEqual(answer['state'], 'done', answer)
+        self.assertIn(f'Your films in {made} are connected, used where they are.', answer['message'])
+        self.assertIn(media_locations.THEIRS.format(path=made), answer['notes'])
+        self.assertNotIn('made', self.pc.settings()['placement']['movies']['extra'][0])
+        self.assertIsNone(self.kind(answer)['folders'][0]['made'])
+        self.assertEqual(stat.S_IMODE(made.stat().st_mode), 0o750, "the person's folder keeps its modes")
+
+    def test_nekoservers_own_folders_on_an_extra_drive_are_never_media_folders(self):
+        # T3-101-2: a drive the Drives page moved photos to (or left an old copy on) was
+        # accepted as a films folder, so the apps listed NekoServer's own files twice.
+        self.pc.config['locations'] = {'photos': 'd4'}
+        for path in (self.pc.kept, self.pc.own):
+            path.write_text(json.dumps(self.pc.config))
+        photos = self.d4 / 'photos' / 'immich-library'
+        (photos / 'upload').mkdir(parents=True)
+        old = self.d4 / 'nekoserver-old-music-0123456789abcdef'
+        (old / 'Abba').mkdir(parents=True)
+        (self.d4 / 'films').mkdir()
+        before = self.pc.settings()
+        for path, said in (
+            (self.d4, f"{self.d4} holds NekoServer's own folders ({photos}: your photos)"),
+            (self.d4 / 'photos', f"{self.d4 / 'photos'} holds NekoServer's own folders ({photos}: your photos)"),
+            (photos, f"{photos} is inside NekoServer's own folders ({photos})"),
+            (photos / 'upload', f"{photos / 'upload'} is inside NekoServer's own folders ({photos})"),
+            (old / 'Abba', f"{old / 'Abba'} is inside NekoServer's own folders ({old})"),
+        ):
+            answer = self.pc.ask(change='add', kind='movies', path=str(path), how='in_place', downloads=False)
+            self.assertEqual(answer['state'], 'refused', path)
+            self.assertIn(said, answer['message'])
+            self.assertEqual(self.pc.settings(), before, path)
+        # An old copy alone is said as one.
+        self.pc.config['locations'] = {}
+        for path in (self.pc.kept, self.pc.own):
+            path.write_text(json.dumps(self.pc.config))
+        answer = self.pc.ask(change='add', kind='movies', path=str(self.d4), how='in_place', downloads=False)
+        self.assertIn(f"({old}: an old copy the Drives page keeps after a move)", answer['message'])
+        # A folder of the person's beside them, and a folder made on the drive, are fine.
+        self.assertEqual(
+            self.pc.ask(change='add', kind='movies', path=str(self.d4 / 'films'), how='in_place', downloads=False)[
+                'state'
+            ],
+            'done',
+        )
+        self.assertEqual(self.make('tv', downloads=False)['state'], 'done')
 
     def test_music_there_is_asked_about_the_backup_as_on_a_nas_and_yes_unless_no(self):
         look = self.pc.ask(change='look')
