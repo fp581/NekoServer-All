@@ -615,14 +615,24 @@ mod tests {
             .contains("Restart the server"));
         assert!(s.job()["unfinished"] == true);
         // T1-20: "Try again" and "Give it up" are the way on past it, never a lock for good.
-        assert_eq!(checked("app_data_retry", &json!({"x": 1})).unwrap(), json!({"job": "retry"}));
-        assert_eq!(checked("app_data_give_up", &json!({})).unwrap(), json!({"job": "give_up"}));
+        assert_eq!(
+            checked("app_data_retry", &json!({"x": 1})).unwrap(),
+            json!({"job": "retry"})
+        );
+        assert_eq!(
+            checked("app_data_give_up", &json!({})).unwrap(),
+            json!({"job": "give_up"})
+        );
         assert_eq!(s.start("app_data_retry", &json!({}))["ok"], true);
         fs::remove_file(root.join("run/request.json")).unwrap();
         assert_eq!(s.start("app_data_give_up", &json!({}))["ok"], true);
         fs::remove_file(root.join("run/request.json")).unwrap();
         fs::remove_file(root.join("state/journal.json")).unwrap();
-        assert_eq!(s.start("app_data_retry", &json!({}))["error"], "E47", "nothing to try again");
+        assert_eq!(
+            s.start("app_data_retry", &json!({}))["error"],
+            "E47",
+            "nothing to try again"
+        );
         assert_eq!(s.start("app_storage_look", &json!({}))["ok"], true);
         let _ = fs::remove_dir_all(&root);
     }
@@ -694,7 +704,11 @@ mod tests {
         let look = json!({"same_drive": ["photos"]});
         let rows = data_kinds(&cfg, &look);
         let same = |k: &str| rows.iter().find(|r| r["kind"] == k).unwrap()["same_drive"].clone();
-        assert_eq!(same("photos"), true, "the look says the photos are backed up on their own drive");
+        assert_eq!(
+            same("photos"),
+            true,
+            "the look says the photos are backed up on their own drive"
+        );
         assert_eq!(same("music"), false);
     }
 }

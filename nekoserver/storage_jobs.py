@@ -592,8 +592,8 @@ def kind_folders(kind):
 
 def inner_names(kind, rel):
     """The names in a kind's folder `rel` that are another kind's folders (T1-20: the films'
-    library/downloads holds the music's library/downloads/music, which qBittorrent needs on
-    the music's drive): never copied, compared, retired or moved with it, and never in the
+    downloads folder holds the music's downloads folder, which qBittorrent needs on the
+    music's drive): never copied, compared, retired or moved with it, and never in the
     way of it."""
     names = set()
     for other in KINDS:
@@ -2090,8 +2090,6 @@ def mirror_context(job):
         done = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, check=False)
         return done.returncode, done.stdout + done.stderr
 
-    import inspect
-
     named = {
         'run': ran,
         'erase': lambda *given, **more: erase(*given, config=job.config, **more),
@@ -2099,12 +2097,10 @@ def mirror_context(job):
         'journal': lambda phase, committed=False, undo=None: job.journal(phase, committed, **(undo or {})),
         'progress': job.progress,
         'clear': lambda: (job.state / JOURNAL).unlink(missing_ok=True),
+        # T1-18 for job D (T2, 57eb40c): the mirror's drive checked before the erase, the
+        # add and a cut-off finish. Always given, so a Context without it fails loudly.
+        'away': lambda folder: mirror_drive_away(job.config, folder),
     }
-    # T1-18 for job D (T2, 57eb40c): the mirror's drive checked before the erase, the add
-    # and a cut-off finish; given to a mirror_add that takes it.
-    takes = inspect.signature(mirror_add.Context).parameters.values()
-    if any(p.name == 'away' or p.kind is inspect.Parameter.VAR_KEYWORD for p in takes):
-        named['away'] = lambda folder: mirror_drive_away(job.config, folder)
     return mirror_add.Context(**named)
 
 
@@ -2253,12 +2249,26 @@ def give_up(job, stuck):
             words = 'The job was given up. The old copy is deleted when its drive is back.'
         elif cut.action == 'use' and undo.get('drive'):
             words = give_up_drive(cut, undo['drive'])
+        elif cut.action == 'mirror_add':
+            words = mirror_given_up(undo)
         else:
             cut.reapply(stuck)
             words = 'The job was given up. Run setup again (sudo bash install.sh) so every app is as the settings say.'
         cut.result('failed', words)
         cut.done()
     return 1
+
+
+def mirror_given_up(undo):
+    """The words for a mirror's rebuild let go (T5, review of 6940d3f: its pool may never
+    come back, and setup does not rebuild a mirror): the recovery page's row for it."""
+    row = 'A drive of a Btrfs pool failed'
+    if str(undo.get('array') or '').startswith('md-'):
+        row = 'A drive of a RAID array failed'
+    return (
+        'The job was given up: the new drive was not made part of the mirror, which goes on '
+        f'with the drives it has. To replace the failed drive, see RECOVERY.md, "{row}".'
+    )
 
 
 def give_up_drive(job, drive):
