@@ -1448,9 +1448,11 @@ def finish_lost(job, kind, here):
         also = f' Setup, run again for {place_words(here)}, stopped: {error}'
     finally:
         migrate.start_again(stopped, job.out)
+    kept = job.undo().get('kept')
     raise Stop(
         LOST_WORDS.format(kind=KIND_WORDS[kind], to=place_words(job.undo()['to']), here=place_words(here)) + also,
-        'Move them again from the Drives page.',
+        'Move them again from the Drives page.'
+        + (f' What was at the new place is kept in {kept}: look there for anything added since.' if kept else ''),
     )
 
 
@@ -1666,7 +1668,13 @@ def undo_move(job):
     if kind == 'backups' and here not in (None, 'media') and switching:
         rebind_backups(job.config, job.out)
     if job.action == 'move' and staging.name.startswith('nekoserver-new-') and staging.is_dir():
-        shutil.rmtree(staging)
+        if journal.get('phase') == 'lost':
+            # What was at the new place may hold an app's writes since the start (an upload
+            # from a phone): only its empty folders go (T5 on 5d6eaed).
+            if not remove_empty(staging):
+                job.journal('lost', True, kept=str(staging))
+        else:
+            shutil.rmtree(staging)
     if job.action == 'back':
         restore_back_copy(job, journal)
 

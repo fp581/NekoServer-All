@@ -216,6 +216,18 @@ class LostSwitchTests(Jobs):
         self.assertFalse((self.root / 'drives/d3/photos/immich-library').exists())
         self.assertEqual(last_result(self.root)['state'], 'failed')
 
+    def test_what_an_app_wrote_at_the_new_place_is_kept_when_a_lost_switch_is_undone(self):
+        self.files(self.root / 'ssd/photos/immich-library', **{'a.jpg': '1', 'b.jpg': '2', 'c.jpg': '3'})
+        self.files(self.root / 'drives/d3/photos/immich-library', **{'a.jpg': '1', 'from-the-phone.jpg': 'new'})
+        self.cut('photos', 'ssd', 'd3', copied=[3])
+        self.resume_and_finish()
+        staging = self.root / f'drives/d3/nekoserver-new-photos-{ID}'
+        self.assertEqual((staging / 'photos/immich-library/from-the-phone.jpg').read_text(), 'new')
+        self.assertEqual(self.saved()['locations'], {})
+        result = last_result(self.root)
+        self.assertEqual(result['state'], 'failed')
+        self.assertIn(str(staging), result['advice'])
+
     def test_an_empty_new_folder_after_setup_started_is_undone_from_the_retired_old_one(self):
         # Backups retired before setup ran, then the cut: the old place's files are in the
         # old copy's folder, the new one is empty.
