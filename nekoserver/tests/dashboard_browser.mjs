@@ -118,7 +118,7 @@ const CHECKS = {
           n => n.getClientRects().length && n.getBoundingClientRect().right > edge
         );
         return out
-          .map(n => n.tagName.toLowerCase() + (n.className ? '.' + String(n.className).split(' ').join('.') : ''))
+          .map(n => n.tagName.toLowerCase() + (n.className ? '.' + String(n.className).replaceAll(' ', '.') : ''))
           .slice(-6);
       });
     const cards = await page.evaluate(() =>
@@ -160,7 +160,7 @@ const CHECKS = {
         .filter(
           n => n.getClientRects().length && n.getBoundingClientRect().right > document.documentElement.clientWidth + 1
         )
-        .map(n => n.tagName.toLowerCase() + '.' + String(n.className).split(' ').join('.'))
+        .map(n => n.tagName.toLowerCase() + '.' + String(n.className).replaceAll(' ', '.'))
         .slice(-6)
     }));
     await page.click('.media-outcome button:text-is("Give it up")');
