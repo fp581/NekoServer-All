@@ -163,13 +163,16 @@ const CHECKS = {
         .map(n => n.tagName.toLowerCase() + '.' + String(n.className).replaceAll(' ', '.'))
         .slice(-6)
     }));
-    await page.click('.media-outcome button:text-is("Give it up")');
-    await page.waitForSelector('#drive-pin');
-    const dialog = await page.evaluate(() => ({
-      typed: document.getElementById('drive-confirm') !== null,
-      focused: document.activeElement.id,
-      wide: document.getElementById('dialog').scrollWidth > document.getElementById('dialog').clientWidth + 1
-    }));
+    // Pressed and read in one go: the PIN field holds the focus as the dialog opens, not a
+    // frame later (GitHub CI found the close button focused).
+    const dialog = await page.evaluate(() => {
+      [...document.querySelectorAll('.media-outcome button')].find(b => b.textContent === 'Give it up').click();
+      return {
+        typed: document.getElementById('drive-confirm') !== null,
+        focused: document.activeElement.id,
+        wide: document.getElementById('dialog').scrollWidth > document.getElementById('dialog').clientWidth + 1
+      };
+    });
     await page.fill('#drive-pin', '2468');
     await page.click('#dialog button[type=submit]');
     await page.waitForTimeout(500);
