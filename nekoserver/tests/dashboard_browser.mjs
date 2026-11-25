@@ -165,6 +165,8 @@ const CHECKS = {
     }));
     await page.click('.media-outcome button:text-is("Give it up")');
     await page.waitForSelector('#drive-pin');
+    // showModal focuses the close button first; the PIN field takes it a frame later.
+    await until(page, () => document.activeElement.id === 'drive-pin').catch(() => undefined);
     const dialog = await page.evaluate(() => ({
       typed: document.getElementById('drive-confirm') !== null,
       focused: document.activeElement.id,
