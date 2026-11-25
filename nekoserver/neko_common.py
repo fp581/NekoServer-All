@@ -1384,12 +1384,10 @@ STORAGE_KEYS = {'ssd': 'data_ssd', 'media': 'media_hdd'}
 
 def mounted_uuid(folder):
     """The filesystem UUID of what is mounted at `folder`; '' for a mount that has none (a
-    network share) or when it can not be read; None when nothing is mounted there."""
-    try:
-        if not os.path.ismount(folder):
-            return None
-    except (OSError, ValueError):
-        return None
+    network share) or when it can not be read; None when nothing is mounted there. findmnt
+    alone: a bind of a folder on the same filesystem (a role kept on the disk Linux runs
+    from, or on the drive both roles share) is no mount to os.path.ismount (review of
+    cdcbc14), and findmnt shows it with its filesystem's UUID."""
     try:
         found = subprocess.run(
             ['findmnt', '-n', '-o', 'UUID', '--mountpoint', str(folder)],
@@ -1400,6 +1398,8 @@ def mounted_uuid(folder):
         )
     except (OSError, subprocess.SubprocessError):
         return ''
+    if found.returncode != 0:
+        return None  # findmnt finds nothing mounted there
     words = found.stdout.split()
     return words[0] if words else ''
 

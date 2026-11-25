@@ -64,6 +64,50 @@ class ProbeTests(unittest.TestCase):
     def test_nothing_is_mounted_at_a_plain_folder(self):
         self.assertIsNone(neko_common.mounted_uuid(Path(__file__).parent))
 
+    def findmnt(self, code, out):
+        found = mock.Mock(returncode=code, stdout=out)
+        return mock.patch.object(neko_common.subprocess, 'run', return_value=found)
+
+    def test_a_bind_of_a_folder_is_a_mount_with_its_filesystems_uuid(self):
+        """Review of cdcbc14: os.path.ismount is False for a bind of a folder on the same
+        filesystem (a role kept on the disk Linux runs from); findmnt shows it."""
+        with self.findmnt(0, 'root-uuid\n'), mock.patch('os.path.ismount', return_value=False):
+            self.assertEqual(neko_common.mounted_uuid('/srv/x'), 'root-uuid')
+        with self.findmnt(1, ''):
+            self.assertIsNone(neko_common.mounted_uuid('/srv/x'))
+        with self.findmnt(0, '\n'):
+            self.assertEqual(neko_common.mounted_uuid('/srv/x'), '')
+
+    def test_the_system_disk_and_one_drive_layouts_are_there(self):
+        modules = str(Path(__file__).resolve().parents[1] / 'modules')
+        sys.path.insert(0, modules)
+        self.addCleanup(sys.path.remove, modules)
+        import storage
+
+        system = {
+            'data_mount': '/srv/x',
+            'media_mount': '/mnt/y',
+            'storage': {
+                key: {'uuid': 'root-uuid', 'fstype': 'ext4', 'folder': folder}
+                for key, folder in storage.SYSTEM_FOLDERS.items()
+            },
+        }
+        one = {
+            'data_mount': '/srv/x',
+            'media_mount': '/mnt/y',
+            'storage': {
+                key: {'uuid': 'one-uuid', 'fstype': 'ext4', 'folder': folder}
+                for key, folder in storage.SHARED_FOLDERS.items()
+            },
+        }
+        with mock.patch('os.path.ismount', return_value=False):
+            with self.findmnt(0, 'root-uuid\n'):
+                self.assertEqual([neko_common.drive_away(system, p) for p in ('ssd', 'media')], [None, None])
+            with self.findmnt(0, 'one-uuid\n'):
+                self.assertEqual([neko_common.drive_away(one, p) for p in ('ssd', 'media')], [None, None])
+            with self.findmnt(1, ''):
+                self.assertEqual(neko_common.drive_away(one, 'ssd'), 'missing')
+
 
 class BeforeTheStartTests(Jobs):
     def test_a_move_to_a_drive_that_is_away_is_refused_before_anything(self):
@@ -326,6 +370,87 @@ class AtTheStartTests(Jobs):
         self.assertEqual(self.run_job('retry'), 0)
         self.assertIsNone(saved_journal(self.root))
         self.assertEqual(last_result(self.root)['state'], 'resumed')
+
+    def test_try_again_resumes_under_the_lock_with_the_apps_stopped(self):
+        """Review of cdcbc14: the start's resume assumes no app runs (it copies the new
+        place back and deletes the staging); "Try again" runs it as the start would."""
+        self.config['locations'] = {'photos': 'media'}
+        self.write_settings()
+        journal(
+            self.root,
+            'move',
+            'start',
+            {'kind': 'photos', 'to': 'media'},
+            here='ssd',
+            to='media',
+            change=[['locations', 'photos', 'media']],
+            was=None,
+        )
+        seen, real = [], storage_jobs.resume
+
+        def resume(*args, **kwargs):
+            held = neko_common.hold_operation(self.root / 'operation.lock')
+            seen.append((held is None, list(self.started)))
+            if held is not None:
+                held.close()
+            return real(*args, **kwargs)
+
+        stops = []
+        writers = self.stop_writers
+
+        def stop_writers(**kwargs):
+            stops.append(True)
+            return writers(**kwargs)
+
+        with (
+            mock.patch.object(storage_jobs, 'resume', resume),
+            mock.patch.object(migrate, 'stop_writers', stop_writers),
+        ):
+            self.assertEqual(self.run_job('retry'), 0)
+        self.assertTrue(seen[0][0])  # the lock was held
+        self.assertTrue(stops)
+        self.assertEqual(seen[0][1], [])  # nothing started again before it
+        self.assertIn(['nekoserver-immich.service'], self.started)
+
+    def test_give_up_is_refused_while_every_drive_of_the_job_is_there(self):
+        self.config['locations'] = {'photos': 'd3'}
+        self.write_settings()
+        journal(
+            self.root,
+            'move',
+            'unswitch',
+            {'kind': 'photos', 'to': 'd3'},
+            here='media',
+            to='d3',
+            change=[['locations', 'photos', 'd3']],
+            was='media',
+        )
+        self.assertEqual(self.run_job('give_up'), 1)
+        self.assertIn('use "Try again"', last_result(self.root)['message'])
+        self.assertIsNotNone(saved_journal(self.root))
+        self.assertEqual(self.saved()['locations']['photos'], 'd3')
+
+    def test_a_given_up_delete_waits_for_its_drive_and_is_done_once_it_is_back(self):
+        gone = self.root / f'drives/d3/nekoserver-deleting-photos-{ID}'
+        self.files(gone, **{'x.jpg': 'one'})
+        journal(self.root, 'delete_old', 'delete', {'kind': 'photos', 'copy': ID}, deleting=str(gone))
+        self.unplug('d3')
+        self.run_job('give_up')
+        self.assertEqual(
+            storage_jobs.waiting(self.root / 'state'),
+            [{'job': 'delete_old', 'deleting': str(gone), 'place': 'd3'}],
+        )
+        self.plug_in('d3')
+        storage_jobs.waiting_work(self.config, self.root / 'state', out=print)
+        self.assertFalse(gone.exists())
+        self.assertEqual(storage_jobs.waiting(self.root / 'state'), [])
+
+    def test_a_waiting_delete_is_done_only_on_the_drive_it_was_on(self):
+        gone = self.root / f'media/nekoserver-deleting-photos-{ID}'
+        self.files(gone, **{'x.jpg': 'one'})
+        storage_jobs.wait_for(self.root / 'state', {'job': 'delete_old', 'deleting': str(gone), 'place': 'd3'})
+        storage_jobs.waiting_work(self.config, self.root / 'state', out=print)
+        self.assertTrue(gone.exists())
 
 
 class MediaFoldersTests(Jobs):

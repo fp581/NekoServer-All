@@ -1431,6 +1431,15 @@ def job_places(job):
 WAITING = 'waiting.json'
 
 
+def delete_waits(config, undo):
+    """The waiting entry of an old copy's delete: the folder, and the drive that holds it
+    (the one it is deleted on, and only there, once it is back)."""
+    from neko_common import place_holding
+
+    deleting = undo.get('deleting', '')
+    return {'job': 'delete_old', 'deleting': deleting, 'place': place_holding(config, Path(deleting).parent)}
+
+
 def wait_for(state, entry):
     """Work kept for a drive that is away (its old folders retired, an old copy deleted),
     done when it is back (waiting_work); it never holds up another job."""
@@ -1445,21 +1454,14 @@ def waiting(state=None):
 
 def waiting_work(config, state=None, out=print):
     """What waits for a drive that is back now, done; the rest kept."""
-    import shutil
-
     kept = []
     for entry in waiting(state):
         place = entry.get('here') or entry.get('place')
         try:
-            if away(config, place):
+            if not place or away(config, place):
                 kept.append(entry)
                 continue
-            if entry.get('job') == 'retire' and place_of(config, entry['kind']) != place:
-                retire_folders(config, entry['kind'], place, entry['id'])
-            elif entry.get('job') == 'delete_old':
-                gone = Path(entry.get('deleting', ''))
-                if gone.name.startswith('nekoserver-deleting-') and gone.exists():
-                    shutil.rmtree(gone)
+            do_waiting(config, entry, place)
         except (OSError, RuntimeError, KeyError) as error:
             out(f'What waited for {place} could not be done yet: {error}')
             kept.append(entry)
@@ -1467,6 +1469,25 @@ def waiting_work(config, state=None, out=print):
         write_state(WAITING, {'entries': kept}, state)
     elif read_state(WAITING, state) is not None:
         (Path(state or STATE) / WAITING).unlink(missing_ok=True)
+
+
+def do_waiting(config, entry, place):
+    """One waiting entry done, its drive `place` there."""
+    import shutil
+
+    from neko_common import place_holding
+
+    if entry.get('job') == 'retire' and place_of(config, entry['kind']) != place:
+        retire_folders(config, entry['kind'], place, entry['id'])
+    elif entry.get('job') == 'delete_old':
+        gone = Path(entry.get('deleting', ''))
+        # Only the folder this job named, on the drive it was on (review of cdcbc14).
+        if (
+            gone.name.startswith('nekoserver-deleting-')
+            and place_holding(config, gone.parent) == place
+            and gone.exists()
+        ):
+            shutil.rmtree(gone)
 
 
 def remove_empty(folder):
@@ -1971,11 +1992,31 @@ STUCK_ADVICE = (
 
 def retry(job, stuck):
     """A job the start could not finish, tried again now (its drives back): the start's own
-    steps, the resume then the finish, in this run."""
-    code = resume(job.config, job.settings_files, job.state, job.folder, job.out, hand_off=False)
-    if code or not read_state(JOURNAL, job.state):
-        return code
-    return finish(job.config, job.settings_files, job.state, job.folder, job.out)
+    steps, the resume then the finish, in this run, under the operation lock and with the
+    apps stopped, as at the start before Docker (review of cdcbc14: the resume copies the
+    new place back and deletes the staging, and moves folders the apps use)."""
+    import migrate
+    from neko_common import OPERATION_LOCK, hold_operation
+
+    held = hold_operation(OPERATION_LOCK)
+    if held is None:
+        job.result('failed', FACTS.get('busy', 'Another job is at work.'), 'Try again later.')
+        return 1
+    with held:
+        try:
+            stopped = migrate.stop_writers(out=job.out, note=lambda units: None, own=left_alone())
+        except RuntimeError as error:
+            job.result('failed', f'{error}. Nothing was changed.', 'Try again later.')
+            return 1
+        try:
+            code = resume(job.config, job.settings_files, job.state, job.folder, job.out, hand_off=False)
+            saved = read_state(JOURNAL, job.state)
+            if code or not saved or not saved.get('committed'):
+                return code
+            config = job.config
+            return finish_held(Job(saved['request'], config, job.settings_files, job.state, job.folder, job.out), saved)
+        finally:
+            migrate.start_again(stopped, out=job.out)
 
 
 def give_up(job, stuck):
@@ -1992,6 +2033,12 @@ def give_up(job, stuck):
     with held:
         cut = Job(stuck['request'], job.config, job.settings_files, job.state, job.folder, job.out)
         undo, kind = stuck.get('undo') or {}, (stuck.get('request') or {}).get('kind')
+        places = cut_places(job.config, stuck)
+        if places and not any(away(job.config, place) for place in places):
+            # Given up with every drive there, the settings would go back without what the
+            # apps wrote at the new place (review of cdcbc14): this is for a lost drive.
+            job.result('failed', 'Its drives are all here: use "Try again". Nothing was changed.', STUCK_ADVICE)
+            return 1
         if not stuck.get('committed'):
             undo_cut_off(cut, stuck)
             words = 'The job was given up and undone: everything is as it was before it.'
@@ -2005,7 +2052,7 @@ def give_up(job, stuck):
                 '(sudo bash install.sh) so every app uses that place.'
             )
         elif cut.action == 'delete_old':
-            wait_for(cut.state, {'job': 'delete_old', 'deleting': undo.get('deleting', ''), 'place': undo.get('place')})
+            wait_for(cut.state, delete_waits(cut.config, undo))
             words = 'The job was given up. The old copy is deleted when its drive is back.'
         else:
             cut.reapply(stuck)
@@ -2096,6 +2143,18 @@ def resume(config, settings_files, state=None, folder=None, out=print, hand_off=
         job.result('undone', UNDONE_WORDS.get(job.action, UNDONE_WORDS['move']), power_cut=True)
         job.done()
         return 0
+    saved = committed_before_docker(job, saved)
+    if job.action in ('move', 'back', 'use', 'mirror_add'):
+        if hand_off:
+            hand_to_finish(settings_files)
+        return 0
+    finish_cut_off(job, saved)
+    return 0
+
+
+def committed_before_docker(job, saved):
+    """A committed job's part that must be done before an app starts: a lost switch undone
+    (T1-14), the settings as the journal has them, an undo's files copied back."""
     if job.action in ('move', 'back') and (saved.get('phase') == 'lost' or switch_lost(job, saved)):
         # Before Docker, so no app starts on the new place that lost its files (T1-14).
         undo_lost_switch(job, job.request['kind'], saved['undo']['here'])
@@ -2103,26 +2162,25 @@ def resume(config, settings_files, state=None, folder=None, out=print, hand_off=
     job.reapply(read_state(JOURNAL, job.state) or saved)
     if saved.get('phase') == 'unswitch' and job.action in ('move', 'back') and not saved['undo'].get('files_back'):
         unswitch_files(job, job.request['kind'], saved['undo']['here'])
-    if job.action in ('move', 'back', 'use', 'mirror_add'):
-        if not hand_off:
-            return 0
-        run(
-            [
-                'systemd-run',
-                '--no-block',
-                f'--unit={FINISH_UNIT}',
-                '--property=After=docker.service',
-                '--property=TimeoutStartSec=infinity',
-                sys_executable(),
-                '-Es',
-                str(Path(__file__).resolve()),
-                'finish',
-                *[f'--config={p}' for p in settings_files],
-            ]
-        )
-        return 0
-    finish_cut_off(job, saved)
-    return 0
+    return saved
+
+
+def hand_to_finish(settings_files):
+    """The finish that needs Docker (setup run again), in a unit that runs after it."""
+    run(
+        [
+            'systemd-run',
+            '--no-block',
+            f'--unit={FINISH_UNIT}',
+            '--property=After=docker.service',
+            '--property=TimeoutStartSec=infinity',
+            sys_executable(),
+            '-Es',
+            str(Path(__file__).resolve()),
+            'finish',
+            *[f'--config={p}' for p in settings_files],
+        ]
+    )
 
 
 UNDONE_WORDS = {
@@ -2189,7 +2247,7 @@ def without_drive(job, saved, gone):
         job.done()
         return None
     if job.action == 'delete_old':
-        wait_for(job.state, {'job': 'delete_old', 'deleting': undo.get('deleting', ''), 'place': gone[0]})
+        wait_for(job.state, delete_waits(job.config, undo))
         job.result('failed', f'{words} The old copy is deleted when it is back.', 'Plug it in.', power_cut=True)
         job.done()
         return None
