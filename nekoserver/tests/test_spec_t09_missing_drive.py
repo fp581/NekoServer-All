@@ -52,7 +52,7 @@ CHECKED = {
     'storage-guard': [('startup', 'run'), ('backup', 'open_job'), GUARD],
     'gateway-guard': [('startup', 'run'), ('backup', 'open_job'), GUARD],
     'drive-return': [('drive_return', 'run'), ('drive_return', 'start_again'), PRESENT],
-    'nas-watch': [('nas_watch', 'run'), GUARD],
+    'nas-watch': [('nas_watch', 'run'), PRESENT],  # an Extra drive away keeps only its apps stopped
     'host-snapshot': [('host_snapshot', 'run'), *COORDINATE],
     'host-resume': [('host_snapshot', 'resume_command'), *COORDINATE],
     'app-snapshot': [('app_snapshot', 'run'), *COORDINATE],
@@ -125,7 +125,7 @@ class MissingDriveTests(unittest.TestCase):
             (('apps', 'shared_lock'), 'backup::guard('),
             (('media', 'run'), 'backup::guard('),
             (('os_policy', 'run'), 'backup::guard('),
-            (('nas_watch', 'run'), 'backup::guard('),
+            (('nas_watch', 'run'), 'backup::guard_present('),
             (('backup', 'seal_passwords'), 'guard('),
             (('drive_return', 'start_again'), 'backup::guard_present('),
         ):

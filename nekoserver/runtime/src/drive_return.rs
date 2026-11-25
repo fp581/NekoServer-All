@@ -461,7 +461,7 @@ fn bring_back_placed(
     back: &mut Vec<PathBuf>,
 ) -> Result<bool> {
     let mut remounted = false;
-    for name in common::drives_in_use(cfg) {
+    for name in common::drives_watched(cfg) {
         let record = &cfg["storage"][name.as_str()];
         let uuid = record["uuid"].as_str().unwrap_or("");
         let Some(folder) = common::drive_folder(cfg, &name).filter(|_| plain_uuid(uuid)) else {
@@ -1319,6 +1319,8 @@ mod tests {
         // T1-19: a drive mounted again counts as back, the SSD's and HDD's too.
         assert!(run.contains("back.push(path.clone());"));
         assert!(placed.contains("back.push(folder.clone());"));
+        // A drive holding only a folder the Media folders page made comes back too.
+        assert!(placed.contains("common::drives_watched(cfg)"));
         // Its running apps restart in both ends of the run, before the stopped ones start.
         for start in run.match_indices(concat!("start_failed_apps(\"Drive return\", ", "&missed)"))
         {
