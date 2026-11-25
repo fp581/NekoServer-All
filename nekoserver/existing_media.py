@@ -224,6 +224,22 @@ def own_on_drives(config):
     return found
 
 
+def refuse_own(config, real):
+    """Refused when `real` is NekoServer's own folder, inside one or holding one: its
+    folders, a Drives job's copies, and what the Drives page put on Extra drives."""
+    for own in own_folders(config):
+        if real == own or real.startswith(own + os.sep) or own.startswith(real + os.sep):
+            raise Refused('own', path=real, inside=own)
+    copies = drives_copies(real)
+    if copies:
+        raise Refused('own', path=real, inside=copies[0])
+    for own, what in own_on_drives(config):
+        if within(real, own):
+            raise Refused('own', path=real, inside=own)
+        if within(own, real):
+            raise Refused('holds_own', path=real, inside=own, what=what)
+
+
 def checked_folder(config, value):
     """The folder a person gave, as the real folder it names: absolute, no control
     characters, not the system's, not NekoServer's own. Refused otherwise."""
@@ -232,17 +248,7 @@ def checked_folder(config, value):
     real = os.path.realpath(value)
     if real == '/' or any(real == top or real.startswith(top + os.sep) for top in SYSTEM):
         raise Refused('unsafe', path=real, why='it is one of the system\'s own folders')
-    for own in own_folders(config):
-        if real == own or real.startswith(own + os.sep) or own.startswith(real + os.sep):
-            raise Refused('own', path=real, inside=own)
-    copies = drives_copies(real)
-    if copies:
-        raise Refused('own', path=real, inside=copies[0])
-    for own, what in own_on_drives(config):
-        if real == own or within(real, own):
-            raise Refused('own', path=real, inside=own)
-        if within(own, real):
-            raise Refused('holds_own', path=real, inside=own, what=what)
+    refuse_own(config, real)
     if not os.path.isdir(real):
         raise Refused('not_a_folder', path=real)
     return real

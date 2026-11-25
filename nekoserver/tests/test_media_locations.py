@@ -1127,6 +1127,17 @@ class DriveFolderTests(unittest.TestCase):
         self.assertEqual(films['state'], 'done', films)
         self.assertNotIn('backup', self.pc.settings()['placement']['movies']['extra'][0])
 
+    def test_new_music_is_saved_there_not_are(self):
+        # T4-101-3's wording, in the message of a folder made for music with downloads.
+        answer = self.make('music', downloads=True)
+        self.assertEqual(answer['state'], 'done', answer)
+        self.assertIn('New music is saved there from now on', answer['message'])
+        made = self.d4 / 'media' / 'music'
+        (made / 'a.flac').write_text('song')
+        self.pc.ask(change='remove', kind='music', slot='music', path=str(made))
+        theirs = self.make('music', downloads=False)
+        self.assertIn(f'Your music in {made} is connected, used where it is.', theirs['message'])
+
     def test_a_drive_that_is_not_an_extra_drive_or_not_there_is_refused_and_nothing_is_made(self):
         before = self.pc.settings()
         for drive in ('d9', 'media'):
