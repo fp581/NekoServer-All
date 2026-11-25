@@ -63,8 +63,11 @@ def by_id(dev, disk):
 class Stand:
     """storage_jobs' side: the runner, erase, journal, progress and clear."""
 
-    def __init__(self, sys_block, dev, answers=None, refuse=None):
+    def __init__(self, sys_block, dev, answers=None, refuse=None, away=None):
         self.asked = []
+        # What the drive check says at each look (None: there), in turn; the folders asked.
+        self.away = list(away or [])
+        self.looked = []
         self.answers = answers or {}
         self.refuse = refuse
         self.journals = []
@@ -81,8 +84,13 @@ class Stand:
             sys_block=sys_block,
             dev=dev,
             sleep=self.sleep,
+            away=self.drive_away,
         )
         self.slept = 0
+
+    def drive_away(self, folder):
+        self.looked.append(folder)
+        return self.away.pop(0) if len(self.away) > 1 else (self.away[0] if self.away else None)
 
     def sleep(self, seconds):
         # A wait that never ends fails the test instead of hanging it.
@@ -165,6 +173,37 @@ class Md(unittest.TestCase):
         self.assertEqual(stand.journals[1][2]['member'], 'ata-NEW_S9-part1')
         self.assertNotIn('/dev/', str(stand.journals))
         self.assertEqual(stand.cleared, 1)
+
+    def test_a_mirror_whose_drive_is_away_is_refused_before_anything_is_erased(self):
+        """T1-18: every drive a job uses is checked to be there, and the same one, before it
+        starts: the mirror's own (where it is mounted), with the same words as every job."""
+        mounted = {'findmnt -n -o TARGET --source /dev/md0': (0, '/mnt/nekoserver-media\n')}
+        for said in ('missing', 'other'):
+            stand = Stand(md_sys(self.root / said), self.dev, answers=mounted, away=[said])
+            result = mirror_add.run_job(REQUEST, stand.ctx)
+            self.assertEqual(result['state'], 'failed', result)
+            self.assertIn('Plug it in (the same drive)', result['message'])
+            self.assertIn('/mnt/nekoserver-media', result['message'])
+            self.assertEqual((stand.erased, stand.journals), ([], []))
+            self.assertEqual(stand.looked, ['/mnt/nekoserver-media'])
+
+    def test_a_mirror_whose_drive_goes_while_the_new_one_is_erased_is_not_added_to(self):
+        mounted = {'findmnt -n -o TARGET --source /dev/md0': (0, '/mnt/nekoserver-media\n')}
+        stand = Stand(md_sys(self.root / 'sys'), self.dev, answers=mounted, away=[None, 'missing'])
+        result = mirror_add.run_job(REQUEST, stand.ctx)
+        self.assertEqual(result['state'], 'failed', result)
+        self.assertIn('nothing was changed in the mirror', result['message'])
+        self.assertIn('Plug it in (the same drive)', result['message'])
+        self.assertEqual(len(stand.erased), 1)
+        self.assertFalse([a for a in stand.asked if '--add' in a])
+        self.assertEqual(stand.phases, [('erase', False)])
+        self.assertEqual(stand.cleared, 1)
+        self.assertEqual(stand.looked, ['/mnt/nekoserver-media'] * 2)
+
+    def test_a_mirror_not_mounted_anywhere_has_no_drive_to_check(self):
+        stand = Stand(md_sys(self.root / 'sys'), self.dev, away=['missing'])
+        self.assertEqual(mirror_add.run_job(REQUEST, stand.ctx)['state'], 'done')
+        self.assertEqual(stand.looked, [])
 
     def test_nothing_is_erased_for_a_mirror_that_needs_no_drive(self):
         for name, sys_block, words in (
@@ -519,6 +558,18 @@ class Btrfs(unittest.TestCase):
         result = mirror_add.run_job(POOL, stand.ctx)
         self.assertIn('Restart the server', result['message'])
         self.assertEqual(stand.erased, [])
+
+    def test_a_cut_off_rebuild_waits_while_the_pools_drive_is_away(self):
+        """T1-18: at the start, what needs a drive that is away waits for it: the pool's
+        balance writes to it, so the journal stays, and nothing is run on it."""
+        journal = {'request': POOL, 'phase': 'rebuild', 'committed': True, 'undo': {'member': 'ata-NEW_S9'}}
+        stand = Stand('/nonexistent', self.dev, answers=self.answers(**shows(HEALED)), away=['missing'])
+        result = mirror_add.finish(journal, stand.ctx)
+        self.assertEqual(result['state'], 'failed', result)
+        self.assertIn('Plug it in (the same drive)', result['message'])
+        self.assertEqual((stand.cleared, stand.journals), (0, []))  # not counted as a start
+        self.assertFalse([a for a in stand.asked if a.startswith(('btrfs balance', 'btrfs replace start'))])
+        self.assertEqual(stand.looked, ['/mnt/nekoserver-media'])
 
     def test_a_rebuild_cut_off_is_finished_never_erased_or_started_again(self):
         stand = Stand(
