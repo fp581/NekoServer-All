@@ -158,13 +158,18 @@ def btrfs_pool(run, uuid):
     rc, said = run(['btrfs', 'filesystem', 'show', '--raw', uuid])
     if rc != 0:
         return None
-    missing, present = None, None
+    missing, present, sizes = None, None, [0]
     for found in re.finditer(r'devid\s+(\d+)\s+size\s+(\d+)\s+used\s+\d+\s+path\s+(.*)', said):
         devid, size, path = int(found[1]), int(found[2]), found[3].strip()
         if 'MISSING' in path or path.startswith('<missing'):
             missing = missing or (devid, size)
-        elif present is None and path.startswith('/dev/'):
-            present = path
+        elif path.startswith('/dev/'):
+            present = present or path
+            sizes.append(size)
+    # Mounted degraded (as a replace needs it), btrfs-progs gives the missing device as
+    # "size 0": the new drive then needs the room of the largest device left.
+    if missing and missing[1] == 0:
+        missing = (missing[0], max(sizes))
     rc, mounted = run(['findmnt', '-n', '-o', 'TARGET', '--source', f'UUID={uuid}'])
     mount = mounted.splitlines()[0].strip() if rc == 0 and mounted.strip() else None
     # A replace at work still lists the missing device until it ends: ask Btrfs itself.
@@ -262,6 +267,9 @@ def run_job(request, ctx):
     refused = why_not(array)
     if refused:
         return {'state': 'failed', 'message': refused, 'advice': None}
+    gone = drive_gone(array, ctx)
+    if gone:
+        return {'state': 'failed', 'message': gone + ' Nothing was erased.', 'advice': None}
     disk = request['disk']
     ctx.journal('erase', committed=False, undo={'disk': disk})
     ctx.progress('erase')
@@ -287,9 +295,41 @@ def run_job(request, ctx):
             'message': 'The new drive was erased, but the server could not find it again by its name, so nothing was changed in it. Restart the server, then try again.',
             'advice': None,
         }
+    gone = drive_gone(array, ctx)
+    if gone:
+        ctx.clear()
+        return {
+            'state': 'failed',
+            'message': 'The new drive was erased, but nothing was changed in the mirror. ' + gone,
+            'advice': None,
+        }
     ctx.journal('add', committed=False, undo={'disk': disk, 'member': member})
     ctx.progress('add')
     return add(array, target, member, ctx)
+
+
+def mirror_folder(array, ctx):
+    """Where the mirror is mounted (the drive the settings know it as): a Btrfs pool's
+    mount, or where the md array's device is mounted; None when it is mounted nowhere."""
+    if array.get('mount'):
+        return array['mount']
+    if not array.get('dev'):
+        return None
+    rc, said = ctx.run(['findmnt', '-n', '-o', 'TARGET', '--source', array['dev']])
+    lines = said.splitlines() if rc == 0 else []
+    return lines[0].strip() if lines and lines[0].strip() else None
+
+
+def drive_gone(array, ctx):
+    """T1-18, before the job starts and before each write to the mirror: the words that
+    refuse it when the mirror's drive is away or another drive is mounted in its place;
+    None when it is there (or the mirror is mounted nowhere, so no drive names it)."""
+    folder = mirror_folder(array, ctx)
+    found = folder and ctx.away(folder)
+    if not found:
+        return None
+    what = 'is not connected' if found == 'missing' else 'is another drive than the one set up'
+    return f'The drive of this mirror ({folder}) {what}. Plug it in (the same drive), then try again.'
 
 
 def resolve(dev, name):
@@ -494,6 +534,12 @@ def finish(journal, ctx):
     journal for the next start, but for HOLD_RUNS starts at most: the page is never held for
     good (a replace still at work keeps the pool shown as rebuilding, so nothing is offered)."""
     undo = journal.get('undo') or {}
+    array = find((journal.get('request') or {}).get('array'), ctx.run, ctx.sys_block)
+    gone = drive_gone(array, ctx) if array is not None and array['kind'] == 'btrfs' else None
+    if gone:
+        # It waits for the drive (T1-18): the journal stays as it is, a start that finds
+        # the drive away is not one of the HOLD_RUNS, and the next start finishes it.
+        return {'state': 'failed', 'message': 'The copy onto the new drive waits. ' + gone, 'advice': None}
     runs = undo.get('runs', 0) + 1
     if runs > HOLD_RUNS:
         ctx.clear()
@@ -503,7 +549,6 @@ def finish(journal, ctx):
             'advice': 'Run `sudo btrfs replace status <the pool folder>` to see how it stands.',
         }
     ctx.journal('rebuild', committed=True, undo={**undo, 'runs': runs})
-    array = find((journal.get('request') or {}).get('array'), ctx.run, ctx.sys_block)
     if array is None or array['kind'] != 'btrfs' or not array['mount']:
         return {
             'state': 'failed',
@@ -530,9 +575,23 @@ class Context:
     folders, and a clock (tests give their own). `run(argv, timeout=None)` never uses a shell."""
 
     def __init__(
-        self, run, erase, refused, journal, progress, clear, sys_block='/sys/block', dev='/dev', sleep=time.sleep
+        self,
+        run,
+        erase,
+        refused,
+        journal,
+        progress,
+        clear,
+        sys_block='/sys/block',
+        dev='/dev',
+        sleep=time.sleep,
+        away=None,
     ):
         self.run = run
+        # T1-18: `away(folder)`: None when the drive mounted at `folder` is there and the one
+        # the settings name, else what is wrong ("missing", "other"); storage_jobs gives
+        # neko_common.drive_away. Without one, nothing is checked.
+        self.away = away or (lambda folder: None)
         self.refused = refused  # the exception storage_jobs' erase raises, in the person's words
         self.erase = erase
         self.journal = journal
