@@ -1546,6 +1546,22 @@ def drives_in_use(config):
     return sorted(drive for drive in named if isinstance(drive, str) and drive in extra_drives(config))
 
 
+def drives_watched(config):
+    """The extra drives the drive checks watch, as the runtime's common::drives_watched:
+    those in use, then those holding only a folder the Media folders page made (part C;
+    T2's 8d62a8c for the runtime guard, setup's check here)."""
+    found = drives_in_use(config)
+    placement = config.get('placement')
+    rows = placement.values() if isinstance(placement, dict) else ()
+    for row in rows:
+        extra = row.get('extra') if isinstance(row, dict) else None
+        for entry in extra if isinstance(extra, list) else ():
+            name = entry.get('made') if isinstance(entry, dict) else None
+            if isinstance(name, str) and name in extra_drives(config) and name not in found:
+                found.append(name)
+    return found
+
+
 def photo_library(config):
     """Immich's photos and videos (its upload location)."""
     return files_root(config, 'photos') / LOCATIONS['photos'][1][0]
@@ -2802,8 +2818,9 @@ def verify_storage(config, keys=('data_ssd', 'media_hdd'), ask=None, writable=Fa
     import native_runtime
 
     if tuple(keys) == OLD_STORAGE_KEYS:
-        # ... and every other drive something is placed on (0.50.0).
-        keys = (*keys, *drives_in_use(config))
+        # ... and every other drive something is placed on (0.50.0), or that holds a folder
+        # the Media folders page made: the drives the runtime's guard watches.
+        keys = (*keys, *drives_watched(config))
     settings = {k: config.get(k) for k in ('data_mount', 'media_mount', 'external_backup_mount', 'storage')}
     photos = config.get('photos') or {}
     settings['photos'] = {

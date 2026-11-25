@@ -109,10 +109,12 @@ class SetupInAJobTests(Jobs):
 
     def test_the_setup_of_a_job_is_told_to_wait_for_the_lock(self):
         seen = []
+
+        def setup_again(*_args, **_kwargs):
+            seen.append(os.environ.get(storage_jobs.LOCK_WAIT))
+
         job = storage_jobs.Job(self.request('use'), self.config, self.settings, self.root / 'state', self.root / 'run')
-        with mock.patch.object(
-            migrate, 'setup_again', lambda *a, **k: seen.append(os.environ.get(storage_jobs.LOCK_WAIT))
-        ):
+        with mock.patch.object(migrate, 'setup_again', side_effect=setup_again):
             REAL_SETUP_AGAIN(job)
         self.assertEqual(seen, [str(storage_jobs.SETUP_LOCK_WAIT)])
         self.assertNotIn(storage_jobs.LOCK_WAIT, os.environ, 'only for that setup')

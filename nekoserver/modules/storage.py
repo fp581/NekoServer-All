@@ -1629,6 +1629,10 @@ def give_up_placed(config, name):
         for row in [row for row, drive in saved.items() if drive == name]:
             saved.pop(row)
     if isinstance(config.get('placement'), dict):
+        # A folder the Media folders page made on it goes with it (T5, review of 02ac9e8).
+        for entry in config['placement'].values():
+            if isinstance(entry, dict) and isinstance(entry.get('extra'), list):
+                entry['extra'] = [e for e in entry['extra'] if not (isinstance(e, dict) and e.get('made') == name)]
         # Worked out again from the drives left, the person's own folders carried over.
         existing_page.keep_table(config)
 
