@@ -99,5 +99,29 @@ class StuckAddTests(Jobs):
         self.assertEqual(self.saved()['storage']['d5']['uuid'], 'new-uuid')
 
 
+class MirrorTests(Jobs):
+    """T2's job D (57eb40c): mirror_add.Context asks away(folder) of the mirror's mount
+    folder before the erase, the add and a cut-off finish; storage_jobs wires the drive
+    check (T1-18) into it."""
+
+    def test_the_mirror_job_is_given_the_drive_check(self):
+        import mirror_add
+
+        given = {}
+
+        def context(**named):
+            given.update(named)
+
+        with mock.patch.object(mirror_add, 'Context', context):
+            job = storage_jobs.Job(
+                {'id': ID, 'job': 'mirror_add'}, self.config, self.settings, self.root / 'state', self.root / 'run'
+            )
+            storage_jobs.mirror_context(job)
+        self.assertIsNone(given['away'](self.root / 'drives/d3/pool'))
+        self.unplug('d3')
+        self.assertEqual(given['away'](self.root / 'drives/d3'), 'missing')
+        self.assertIsNone(given['away']('/nowhere'))
+
+
 if __name__ == '__main__':
     unittest.main()

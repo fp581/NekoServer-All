@@ -2083,14 +2083,31 @@ def mirror_context(job):
         done = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, check=False)
         return done.returncode, done.stdout + done.stderr
 
-    return mirror_add.Context(
-        run=ran,
-        erase=lambda *given, **named: erase(*given, config=job.config, **named),
-        refused=Refused,
-        journal=lambda phase, committed=False, undo=None: job.journal(phase, committed, **(undo or {})),
-        progress=job.progress,
-        clear=lambda: (job.state / JOURNAL).unlink(missing_ok=True),
-    )
+    import inspect
+
+    named = {
+        'run': ran,
+        'erase': lambda *given, **more: erase(*given, config=job.config, **more),
+        'refused': Refused,
+        'journal': lambda phase, committed=False, undo=None: job.journal(phase, committed, **(undo or {})),
+        'progress': job.progress,
+        'clear': lambda: (job.state / JOURNAL).unlink(missing_ok=True),
+    }
+    # T1-18 for job D (T2, 57eb40c): the mirror's drive checked before the erase, the add
+    # and a cut-off finish; given to a mirror_add that takes it.
+    takes = inspect.signature(mirror_add.Context).parameters.values()
+    if any(p.name == 'away' or p.kind is inspect.Parameter.VAR_KEYWORD for p in takes):
+        named['away'] = lambda folder: mirror_drive_away(job.config, folder)
+    return mirror_add.Context(**named)
+
+
+def mirror_drive_away(config, folder):
+    """None when the drive that holds `folder` (a mirror's mount) is there and the one the
+    settings name; "missing" or "other" when not; None for a folder on no drive of theirs."""
+    from neko_common import drive_away, place_holding
+
+    place = place_holding(config, folder)
+    return drive_away(config, place) if place else None
 
 
 def mirror_job(job):
