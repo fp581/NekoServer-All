@@ -4384,10 +4384,11 @@ fn other_part(path: &Path, fstype: &str, found: &str, wanted: &str) -> String {
 pub fn guard(cfgpath: &Path, data: &Path, media: &Path) -> Result<()> {
     let c = common::json(cfgpath, 64000);
     let mut ids = main_drives(&c, data, media)?;
-    // Every other drive something is placed on is the one setup chose, too: a job never
-    // reads or writes a folder of a drive that is away (the empty folder left on the
-    // system disk) or of another drive mounted in its place.
-    for name in common::drives_in_use(&c) {
+    // Every other drive something is placed on (or that holds a folder the Media folders
+    // page made) is the one setup chose, too: a job never reads or writes a folder of a
+    // drive that is away (the empty folder left on the system disk) or of another drive
+    // mounted in its place.
+    for name in common::drives_watched(&c) {
         let folder = placed_folder(&c, &name)?;
         distinct(&mut ids, checked_drive(&c, &name, &folder)?)?;
     }
@@ -4402,7 +4403,7 @@ pub(crate) fn guard_present(cfgpath: &Path, data: &Path, media: &Path) -> Result
     let c = common::json(cfgpath, 64000);
     let mut ids = main_drives(&c, data, media)?;
     let mut away = vec![];
-    for name in common::drives_in_use(&c) {
+    for name in common::drives_watched(&c) {
         let folder = placed_folder(&c, &name)?;
         if matches!(common::drive_at(&folder, 10), Ok(None)) {
             away.push(name);
@@ -10887,6 +10888,15 @@ mod tests {
         assert!(body("fn main_drives_with(").contains("checked_drive(c, key, path)"));
         assert!(body("pub fn guard(").contains("main_drives(&c, data, media)?"));
         assert!(body("pub(crate) fn guard_present(").contains("main_drives(&c, data, media)?"));
+        // A drive holding only a folder the Media folders page made is checked as a placed
+        // one: with another disk in its place the apps wrote new files onto it.
+        for start in ["pub fn guard(", "pub(crate) fn guard_present("] {
+            assert!(
+                body(start).contains("for name in common::drives_watched(&c) {"),
+                "{start}"
+            );
+            assert!(!body(start).contains("drives_in_use"), "{start}");
+        }
     }
     /// Seen as a week of "failed" on the dashboard: the 1st fell on the weekly day, the
     /// monthly run had copied the drive, and the weekly copy's giving way to it was

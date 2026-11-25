@@ -295,7 +295,7 @@ class DataOnAnyDriveTests(unittest.TestCase):
         self.assertIn('pub const EXTRA_MOUNTS: &str = "/mnt/nekoserver-drives";', common)
         self.assertEqual(str(neko_common.EXTRA_MOUNTS), '/mnt/nekoserver-drives')
         guard = (ROOT / 'runtime/src/backup.rs').read_text()
-        self.assertIn('for name in common::drives_in_use(&c) {', guard)
+        self.assertIn('for name in common::drives_watched(&c) {', guard)
 
 
 if __name__ == '__main__':
