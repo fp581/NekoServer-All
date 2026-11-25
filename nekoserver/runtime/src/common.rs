@@ -1177,8 +1177,13 @@ pub static OPERATION_LOCK: std::sync::LazyLock<&str> = std::sync::LazyLock::new(
 /// How a job begins its message when it gave way to setup. Not a failure: the job ends
 /// without an error (main.rs), so no alert is sent, and it runs at its next time.
 pub const POSTPONED: &str = "Postponed: setup is running";
+/// The same for a nightly job that gave way to a change on the Drives page, an upgrade or
+/// a drive move (T1-22): no failure, it runs at its next time.
+pub const POSTPONED_FOR_WORK: &str =
+    "Postponed: a change on the Drives page, an upgrade or a drive move is at work";
 pub fn postponed(e: &Error) -> bool {
-    e.to_string().starts_with(POSTPONED)
+    let said = e.to_string();
+    said.starts_with(POSTPONED) || said.starts_with(POSTPONED_FOR_WORK)
 }
 /// `lock_wait` for the backups' shared lock (installer/recovery.lock), which setup holds
 /// too while it changes apps, also while it waits at a question for you. When setup is
@@ -1187,43 +1192,120 @@ pub fn postponed(e: &Error) -> bool {
 pub fn shared_lock_wait(path: &Path, max: Duration, while_setup: Duration) -> Result<File> {
     shared_lock_wait_with(path, Path::new(*SETUP_LOCK), max, while_setup)
 }
+/// `shared_lock_wait` for the nightly jobs (the backups, the photo copy, the USB copy and
+/// the monthly update): they also give way to a change on the Drives page, an upgrade or
+/// a drive move, which hold the operation lock (T1-22: the app backup started during an
+/// erase from the Drives page, and the erase's setup refused three steps). They wait as
+/// they do for setup, then are postponed (rc 0, never "failed") to their next time. A job
+/// started by the one holding it (none is today) is not held up by it.
+pub fn nightly_lock_wait(path: &Path, max: Duration, while_setup: Duration) -> Result<File> {
+    lock_wait_giving_way(
+        path,
+        Path::new(*SETUP_LOCK),
+        Some(Path::new(*OPERATION_LOCK)),
+        max,
+        while_setup,
+    )
+}
 fn shared_lock_wait_with(
     path: &Path,
     setup_lock: &Path,
     max: Duration,
     while_setup: Duration,
 ) -> Result<File> {
+    lock_wait_giving_way(path, setup_lock, None, max, while_setup)
+}
+/// Who keeps a job from the backups' lock.
+#[derive(PartialEq)]
+enum Holder {
+    Setup,
+    Work,
+    Other,
+}
+fn lock_wait_giving_way(
+    path: &Path,
+    setup_lock: &Path,
+    operation: Option<&Path>,
+    max: Duration,
+    while_setup: Duration,
+) -> Result<File> {
     let start = Instant::now();
     let mut announced = false;
     loop {
-        match lock(path) {
+        let holder = match lock(path) {
+            // Taken, and let go again at once while a Drives job (or an upgrade, a drive
+            // move) is at work: this job waits for it as for setup.
+            Ok(f) if operation.is_some_and(operation_elsewhere) => {
+                drop(f);
+                Holder::Work
+            }
             Ok(f) => return Ok(f),
             Err(e) if !busy(&e) => return Err(e),
-            Err(_) => {
-                let setup = held_by(path, setup_lock);
-                let limit = if setup { while_setup.min(max) } else { max };
-                if start.elapsed() >= limit {
-                    return Err(if setup {
-                        Error::new(&format!(
-                            "{POSTPONED} (sudo bash install.sh holds the backups' lock, perhaps waiting at a question); this run did not fail and runs again at its next time"
-                        ))
-                    } else {
-                        still_held(path, max)
-                    });
-                }
-                if !announced {
-                    let who = if setup {
-                        "setup (sudo bash install.sh)".to_string()
-                    } else {
-                        holder(path)
-                    };
-                    println!("{}", waiting_line(&who, limit));
-                    announced = true;
-                }
-                thread::sleep(Duration::from_secs(5).min(limit));
-            }
+            Err(_) if held_by(path, setup_lock) => Holder::Setup,
+            Err(_) => Holder::Other,
+        };
+        let limit = if holder == Holder::Other {
+            max
+        } else {
+            while_setup.min(max)
+        };
+        if start.elapsed() >= limit {
+            return Err(match holder {
+                Holder::Setup => Error::new(&format!(
+                    "{POSTPONED} (sudo bash install.sh holds the backups' lock, perhaps waiting at a question); this run did not fail and runs again at its next time"
+                )),
+                Holder::Work => Error::new(&format!(
+                    "{POSTPONED_FOR_WORK} (the Drives page or the Updates page shows it); this run did not fail and runs again at its next time"
+                )),
+                Holder::Other => still_held(path, max),
+            });
         }
+        if !announced {
+            let who = match holder {
+                Holder::Setup => "setup (sudo bash install.sh)".to_string(),
+                Holder::Work => {
+                    "a change on the Drives page, an upgrade or a drive move".to_string()
+                }
+                Holder::Other => self::holder(path),
+            };
+            println!("{}", waiting_line(&who, limit));
+            announced = true;
+        }
+        thread::sleep(Duration::from_secs(5).min(limit));
     }
+}
+/// Whether a process other than this one and those that started it holds the operation
+/// lock at `op` (read-only, as held_by: the kernel's list of locks, confirmed through the
+/// holder's own open file and its lock on it).
+fn operation_elsewhere(op: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    let Ok(meta) = fs::metadata(op) else {
+        return false;
+    };
+    let locks = fs::read_to_string("/proc/locks").unwrap_or_default();
+    let mine = lineage(std::process::id());
+    lock_holders(&locks, meta.ino())
+        .into_iter()
+        .any(|pid| !mine.contains(&pid) && holds_lock_on(pid, meta.dev(), meta.ino()))
+}
+/// This process and the ones that started it, up to PID 1.
+fn lineage(mut pid: u32) -> Vec<u32> {
+    let mut seen = vec![pid];
+    while pid > 1 && seen.len() < 64 {
+        let Some(parent) = parent_of(pid) else { break };
+        seen.push(parent);
+        pid = parent;
+    }
+    seen
+}
+fn parent_of(pid: u32) -> Option<u32> {
+    let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    // The command's name, in brackets, may hold spaces: the fields after the last ")".
+    stat[stat.rfind(')')? + 1..]
+        .split_whitespace()
+        .nth(1)?
+        .parse()
+        .ok()
 }
 /// Whether setup holds the lock at `path`: a process holding it (the kernel's list of
 /// locks) also has setup's own lock (`setup`) open. Read-only: nothing is locked to find
@@ -2683,6 +2765,49 @@ sys.stdin.read()",
         drop(setup_open);
         drop(held);
         assert!(shared_lock_wait_with(&shared, &setup, short, short).is_ok());
+        let _ = fs::remove_dir_all(root);
+    }
+    /// T1-22: the nightly jobs give way to a change on the Drives page (an upgrade, a drive
+    /// move) that holds the operation lock, and are postponed, not failed; one started by
+    /// the holder itself is not held up, and a wait that looks at no operation lock
+    /// (drive-return) takes the lock as before.
+    #[test]
+    fn a_nightly_job_gives_way_to_a_drives_job_and_is_postponed_not_failed() {
+        let root = scratch("t1-22");
+        let (shared, setup, op) = (
+            root.join("recovery.lock"),
+            root.join("setup.lock"),
+            root.join("operation.lock"),
+        );
+        fs::write(&setup, b"").unwrap();
+        fs::write(&op, b"").unwrap();
+        let short = Duration::from_millis(50);
+        drop(lock_wait_giving_way(&shared, &setup, Some(&op), short, short).unwrap());
+        // Held by this process (a job the holder started): taken at once.
+        let mine = lock(&op).unwrap();
+        assert!(!operation_elsewhere(&op));
+        drop(lock_wait_giving_way(&shared, &setup, Some(&op), short, short).unwrap());
+        drop(mine);
+        // Held by another program (a Drives job): the nightly job waits, then is postponed.
+        let mut other = std::process::Command::new("flock")
+            .arg(&op)
+            .args(["sleep", "3"])
+            .spawn()
+            .unwrap();
+        let start = Instant::now();
+        while !operation_elsewhere(&op) && start.elapsed() < Duration::from_secs(2) {
+            thread::sleep(Duration::from_millis(20));
+        }
+        assert!(operation_elsewhere(&op));
+        let gave = lock_wait_giving_way(&shared, &setup, Some(&op), Duration::from_secs(60), short)
+            .unwrap_err();
+        assert!(postponed(&gave), "{gave}");
+        assert!(gave.to_string().starts_with(POSTPONED_FOR_WORK), "{gave}");
+        assert!(lock(&shared).is_ok(), "the backups' lock was let go again");
+        assert!(lock_wait_giving_way(&shared, &setup, None, short, short).is_ok());
+        let _ = other.kill();
+        let _ = other.wait();
+        assert!(lineage(std::process::id()).contains(&std::process::id()));
         let _ = fs::remove_dir_all(root);
     }
     /// A running setup is told by its own lock being held, nothing else (drive-return

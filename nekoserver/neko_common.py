@@ -333,6 +333,12 @@ SETUP_LOCK = Path(SHARED['setup_lock'])
 OPERATION_LOCK = Path(SHARED['operation_lock'])
 
 
+# Set by a Drives job for the setup it runs again (T1-22): recovery_tools.lock waits this
+# many seconds for the backups' lock instead of refusing at once (a nightly job may take it
+# for a moment before it gives way to the job).
+LOCK_WAIT = 'NEKOSERVER_LOCK_WAIT'
+
+
 def hold_operation(lock=None, wait=False):
     """The operation lock, held until the returned file is closed (or the program ends);
     None when another upgrade or drive move holds it (`wait`: wait for it instead)."""

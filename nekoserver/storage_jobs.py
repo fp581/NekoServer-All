@@ -19,7 +19,7 @@ import sqlite3
 import time
 from pathlib import Path
 
-from neko_common import SHARED
+from neko_common import LOCK_WAIT, SHARED
 
 # Disks are told apart by their names under /dev/disk/by-id, never by /dev/sdX alone.
 BY_ID = Path('/dev/disk/by-id')
@@ -1324,9 +1324,15 @@ def drop_fstab_line(mountpoint, fstab=None):
         run(['systemctl', 'daemon-reload'])
 
 
+# How long the setup a job runs again waits for the backups' lock (T1-22): a nightly job
+# takes it for a moment before it sees the job and gives way.
+SETUP_LOCK_WAIT = 600
+
+
 def setup_again(job):
     """Setup without questions, so every service and backup knows the new place
-    (migrate.setup_again: the way an upgrade and a drive move run it)."""
+    (migrate.setup_again: the way an upgrade and a drive move run it). It waits for the
+    backups' lock instead of refusing its steps (T1-22)."""
     import migrate
 
     log = job.state / f'setup-{job.id}.log'
@@ -1335,9 +1341,11 @@ def setup_again(job):
     # umask, the one it has when started by hand, not this one.
     wanted = system_umask()
     before = None if wanted is None else os.umask(wanted)
+    os.environ[LOCK_WAIT] = str(SETUP_LOCK_WAIT)
     try:
         migrate.setup_again(job.config, job.settings_files[-1], log, out=job.out)
     finally:
+        os.environ.pop(LOCK_WAIT, None)
         if before is not None:
             os.umask(before)
 
@@ -2172,8 +2180,29 @@ def run_request(request, config, settings_files, state=None, folder=None, out=pr
         job.result('failed', FACTS.get('busy', 'Another job is at work.'), 'Try again later.')
         return 1
     with held:
+        busy = nightly_at_work(job.config)
+        if busy:
+            job.result('failed', busy)
+            return 1
         waiting_work(job.config, job.state, job.out)
         return worked(job)
+
+
+NIGHTLY_AT_WORK = (
+    'A NekoServer backup, a restore or the weekly USB copy is running right now (the Backups page shows which '
+    'one). Try again when it has finished. Nothing was changed.'
+)
+
+
+def nightly_at_work(config):
+    """Why no job may start now, or None (T1-22): a backup, a restore or an app update
+    holds the backups' lock, or the USB copy (or a restore from it) holds the drive's.
+    Upgrades and drive moves hold the operation lock, which the job holds already."""
+    import migrate
+    from modules import capacity
+    from neko_common import held_lock_reason
+
+    return held_lock_reason([(migrate.recovery_lock(config), NIGHTLY_AT_WORK), (capacity.USB_LOCK, NIGHTLY_AT_WORK)])
 
 
 STUCK_WORDS = 'A job that was cut off is not finished yet.'
@@ -2196,6 +2225,10 @@ def retry(job, stuck):
         job.result('failed', FACTS.get('busy', 'Another job is at work.'), 'Try again later.')
         return 1
     with held:
+        busy = nightly_at_work(job.config)
+        if busy:
+            job.result('failed', busy, STUCK_ADVICE)
+            return 1
         try:
             stopped = migrate.stop_writers(out=job.out, note=lambda units: None, own=left_alone())
         except RuntimeError as error:
@@ -2318,6 +2351,7 @@ def worked(job):
     except Away as gone:
         saved = read_state(JOURNAL, job.state)
         if saved and saved.get('committed'):
+            stopped_by(job, saved, str(gone))
             job.result('failed', f'{gone} The job is finished at the next start, without it if it is still away.')
             return 1
         job.result('failed', f'{gone} Nothing was changed.', gone.advice)
@@ -2327,6 +2361,7 @@ def worked(job):
         # Said on the page; the journal decides what the boot does.
         saved = read_state(JOURNAL, job.state)
         if saved and saved.get('committed'):
+            stopped_by(job, saved, str(error))
             job.result('failed', f'The job stopped after the switch: {error}', 'It is finished at the next start.')
             return 1
         job.result('failed', f'The job stopped: {error}. Nothing was changed.')
@@ -2522,6 +2557,19 @@ def restore_back_copy(job, saved):
         os.rename(staging, staging.with_name(OLD_NAME.format(kind=job.request['kind'], id=job.request['copy'])))
 
 
+def stopped_by(job, saved, reason):
+    """The reason a job stopped after its commit point, kept in its journal so finishing it
+    says that, never a power cut (T1-22)."""
+    write_state(JOURNAL, {**saved, 'stopped': reason[:400]}, job.state)
+
+
+def finished_words(saved):
+    """(words, power_cut) for a job finished at the start or by "Try again"."""
+    if saved.get('stopped'):
+        return f'The job had stopped ({saved["stopped"]}); it was finished now.', False
+    return 'The power went off during the job; it was finished at the start.', True
+
+
 def finish_cut_off(job, saved):
     """After the commit point: the rest of the job, which never changes its outcome."""
     import shutil
@@ -2535,7 +2583,8 @@ def finish_cut_off(job, saved):
             shutil.rmtree(original)
     elif job.action == 'release':
         drop_fstab_line(extra_mount_root() / saved['undo']['drive'])
-    job.result('resumed', 'The power went off during the job; it was finished at the start.', power_cut=True)
+    words, power_cut = finished_words(saved)
+    job.result('resumed', words, power_cut=power_cut)
     job.done()
 
 
@@ -2601,14 +2650,15 @@ def finish_held(job, saved):
             finish_cut_move(job, saved)
     except Stop as stop:
         state = stopped_state(read_state(JOURNAL, job.state) or saved)
-        job.result(state, str(stop), stop.advice, power_cut=True)
+        job.result(state, str(stop), stop.advice, power_cut=not saved.get('stopped'))
         job.done()
         write_state(LOOK, look(config), job.state)
         return 0 if state == 'done' else 1
     except Exception as error:  # noqa: BLE001
         job.result('failed', f'Finishing the job at the start stopped: {error}', STUCK_ADVICE)
         return 1
-    job.result('resumed', 'The power went off during the job; it was finished at the start.', power_cut=True)
+    words, power_cut = finished_words(saved)
+    job.result('resumed', words, power_cut=power_cut)
     job.done()
     write_state(LOOK, look(config), job.state)
     return 0

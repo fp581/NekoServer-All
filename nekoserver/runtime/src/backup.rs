@@ -4097,7 +4097,8 @@ fn recovery_lock_within(
     wait: std::time::Duration,
     state: &dyn Fn(&str) -> String,
 ) -> Result<fs::File> {
-    common::shared_lock_wait(lock, wait, wait).map_err(|e| {
+    // Gives way to a Drives job, an upgrade or a drive move too (T1-22).
+    common::nightly_lock_wait(lock, wait, wait).map_err(|e| {
         if common::waited_out(&e) && monthly_run_at_work(state) {
             monthly_skip()
         } else {

@@ -69,6 +69,8 @@ class Jobs(unittest.TestCase):
             mock.patch('neko_common.mounted_uuid', self.mounted, create=True),
             mock.patch('neko_common.EXTRA_MOUNTS', self.root / 'drives'),
             mock.patch('neko_common.OPERATION_LOCK', self.root / 'operation.lock'),
+            # The weekly USB copy's lock (T1-22: a job waits for it), never /run's own here.
+            mock.patch('modules.capacity.USB_LOCK', self.root / 'usb.lock'),
             mock.patch.object(storage_jobs, 'FACTS', {'min_bytes': 16 * GB}),
             mock.patch.object(storage_jobs, 'same_drive', lambda a, b: Path(a) == Path(b)),
             mock.patch.object(storage_jobs, 'free_bytes', return_value=100 * GB),
