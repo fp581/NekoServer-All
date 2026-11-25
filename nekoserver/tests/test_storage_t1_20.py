@@ -122,6 +122,19 @@ class MirrorTests(Jobs):
         self.assertEqual(given['away'](self.root / 'drives/d3'), 'missing')
         self.assertIsNone(given['away']('/nowhere'))
 
+    def test_a_mirror_job_that_takes_no_drive_check_fails_loudly(self):
+        import mirror_add
+
+        def context(*, run, erase, refused, journal, progress, clear):
+            raise AssertionError('never built without the drive check')
+
+        with mock.patch.object(mirror_add, 'Context', context):
+            job = storage_jobs.Job(
+                {'id': ID, 'job': 'mirror_add'}, self.config, self.settings, self.root / 'state', self.root / 'run'
+            )
+            with self.assertRaises(TypeError):
+                storage_jobs.mirror_context(job)
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -2090,8 +2090,6 @@ def mirror_context(job):
         done = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, check=False)
         return done.returncode, done.stdout + done.stderr
 
-    import inspect
-
     named = {
         'run': ran,
         'erase': lambda *given, **more: erase(*given, config=job.config, **more),
@@ -2099,12 +2097,10 @@ def mirror_context(job):
         'journal': lambda phase, committed=False, undo=None: job.journal(phase, committed, **(undo or {})),
         'progress': job.progress,
         'clear': lambda: (job.state / JOURNAL).unlink(missing_ok=True),
+        # T1-18 for job D (T2, 57eb40c): the mirror's drive checked before the erase, the
+        # add and a cut-off finish. Always given, so a Context without it fails loudly.
+        'away': lambda folder: mirror_drive_away(job.config, folder),
     }
-    # T1-18 for job D (T2, 57eb40c): the mirror's drive checked before the erase, the add
-    # and a cut-off finish; given to a mirror_add that takes it.
-    takes = inspect.signature(mirror_add.Context).parameters.values()
-    if any(p.name == 'away' or p.kind is inspect.Parameter.VAR_KEYWORD for p in takes):
-        named['away'] = lambda folder: mirror_drive_away(job.config, folder)
     return mirror_add.Context(**named)
 
 
