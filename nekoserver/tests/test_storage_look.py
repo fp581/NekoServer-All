@@ -34,6 +34,8 @@ class LookTests(unittest.TestCase):
         self.free = {}
         for patch in (
             mock.patch('neko_common.EXTRA_MOUNTS', self.root / 'drives'),
+            # A drive is there while its folder is (T1-18: the real check asks findmnt).
+            mock.patch('neko_common.mounted_uuid', lambda folder: '' if Path(folder).is_dir() else None, create=True),
             mock.patch.object(storage_jobs, 'FACTS', {'min_bytes': 16 * GB}),
             # Each folder of the test is a drive of its own, with the room the test gives it.
             mock.patch.object(storage_jobs, 'same_drive', lambda a, b: Path(a) == Path(b)),
@@ -89,7 +91,9 @@ class LookTests(unittest.TestCase):
         self.assertEqual(
             to['ssd']['why_not'], 'Your backups are copies of the Apps drive: they must be on another drive.'
         )
-        self.assertEqual(to['d3']['why_not'], 'Extra drive d3 is not connected.')
+        self.assertEqual(
+            to['d3']['why_not'], f"Extra drive d3 is not connected (nothing is mounted at {self.root / 'drives/d3'})."
+        )
 
     def test_the_backups_place_is_media_unless_the_settings_say(self):
         self.assertEqual(storage_jobs.place_of(self.config, 'backups'), 'media')

@@ -1376,6 +1376,69 @@ def take_places(config, paths=(), out=print, record=None):
     return True
 
 
+# Whether a drive is there (T1-18): an Extra drive gone, with an empty mount folder (or
+# another disk) in its place, was read and written as if it were the drive. A job checks
+# each drive it uses before it starts and before each write.
+STORAGE_KEYS = {'ssd': 'data_ssd', 'media': 'media_hdd'}
+
+
+def mounted_uuid(folder):
+    """The filesystem UUID of what is mounted at `folder`; '' for a mount that has none (a
+    network share) or when it can not be read; None when nothing is mounted there."""
+    try:
+        if not os.path.ismount(folder):
+            return None
+    except (OSError, ValueError):
+        return None
+    try:
+        found = subprocess.run(
+            ['findmnt', '-n', '-o', 'UUID', '--mountpoint', str(folder)],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ''
+    words = found.stdout.split()
+    return words[0] if words else ''
+
+
+def drive_away(config, place):
+    """None when the drive `place` ("ssd", "media" or an Extra drive's name) is there: the
+    filesystem the settings name, mounted at its folder. "missing" when nothing is mounted
+    there (or it is no drive of the settings), "other" when another disk is. A layout that
+    names no filesystem for it (one drive; a folder on a network share) needs its folder."""
+    try:
+        root = drive_folder(config, place)
+    except (RuntimeError, KeyError, TypeError):
+        return 'missing'
+    storage = config.get('storage') if isinstance(config.get('storage'), dict) else {}
+    record = storage.get(STORAGE_KEYS.get(place, place))
+    uuid = record.get('uuid') if isinstance(record, dict) else None
+    if not uuid:
+        return None if Path(root).is_dir() else 'missing'
+    now = mounted_uuid(root)
+    if now is None:
+        return 'missing'
+    return 'other' if now and now != uuid else None
+
+
+def place_holding(config, path):
+    """The drive ("ssd", "media" or an Extra drive's name) whose folder holds `path`, the
+    deepest one (an Extra drive's folder may be under another's); None for none."""
+    real = Path(os.path.realpath(path))
+    found = None
+    for place in ('ssd', 'media', *sorted(extra_drives(config))):
+        try:
+            root = Path(os.path.realpath(drive_folder(config, place)))
+        except (RuntimeError, KeyError, TypeError):
+            continue
+        if (root == real or root in real.parents) and (found is None or len(root.parts) > len(found[1].parts)):
+            found = (place, root)
+    return found[0] if found else None
+
+
 def not_a_drive(config, drive):
     """Why `drive` is no drive of these settings, in words."""
     storage = config.get('storage')
