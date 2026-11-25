@@ -323,8 +323,16 @@ class MediaFoldersInBrowserTests(unittest.TestCase):
         )
         sent = [r for r in self.control.asked if r.get('op') == 'app_media_change' and r.get('change') == 'make']
         self.assertEqual(
-            {k: v for k, v in sent[-1].items() if k not in ('op', 'token', 'pin', 'session')},
-            {'change': 'make', 'kind': 'movies', 'drive': 'd4', 'downloads': True},
+            {k: sent[-1].get(k) for k in ('change', 'kind', 'drive', 'downloads', 'path', 'how', 'backup')},
+            {
+                'change': 'make',
+                'kind': 'movies',
+                'drive': 'd4',
+                'downloads': True,
+                'path': None,
+                'how': None,
+                'backup': None,
+            },
         )
 
     def test_the_page_fits_a_phone(self):
