@@ -199,7 +199,7 @@ class LostSwitchTests(Jobs):
         result = last_result(self.root)
         self.assertEqual(result['state'], 'failed')
         self.assertIn('did not survive', result['message'])
-        self.assertIn('stay on Extra drive d3', result['message'])
+        self.assertIn('It stays on Extra drive d3', result['message'])
         self.assertIsNone(saved_journal(self.root))
         self.assertEqual(self.setups[-1]['locations'], {'music': 'd3'})
 

@@ -3,6 +3,7 @@ Drives page shows before anything is done: every disk with its offer or the reas
 never offered, each kind's size and where it may go, the old copies, and the disks an
 array that lost a drive may take."""
 
+import re
 import sys
 import tempfile
 import unittest
@@ -127,6 +128,25 @@ class LookTests(unittest.TestCase):
         offers = self.look(small, big, arrays={'md-md0': 2 * 10**12})['mirror_offers']['md-md0']
         self.assertEqual([o['ok'] for o in offers], [False, True])
         self.assertEqual(offers[0]['words'], 'It is too small: at least 2 TB is needed.')
+
+
+class WordsTests(unittest.TestCase):
+    """T4-101-3: "Your music are on Extra drive d3 now". Music is one thing."""
+
+    def test_a_lost_switch_says_music_is_one_thing_and_photos_many(self):
+        music = storage_jobs.lost_words('music', 'Extra drive d3', 'Apps drive', '', False)
+        self.assertIn('your music was being switched to Extra drive d3', music)
+        self.assertIn('It stays on Apps drive, as before.', music)
+        photos = storage_jobs.lost_words('photos', 'Extra drive d3', 'Apps drive', '', False)
+        self.assertIn('your photos were being switched', photos)
+        self.assertIn('They stay on Apps drive', photos)
+        away = storage_jobs.lost_words('music', 'Extra drive d3', 'Apps drive', 'Extra drive d3 is gone.', True)
+        self.assertTrue(away.startswith('Extra drive d3 is gone. So your music stays on Apps drive'), away)
+
+    def test_no_kind_sentence_keeps_a_plural_verb_for_every_kind(self):
+        source = (Path(storage_jobs.__file__)).read_text(encoding='utf-8')
+        self.assertIsNone(re.search(r"KIND_WORDS(\[kind\]|\.get\(kind, kind\))\} (are|were|stay)\b", source))
+        self.assertIsNone(re.search(r"\{kind\} (are|were|stay)\b", source))
 
 
 if __name__ == '__main__':

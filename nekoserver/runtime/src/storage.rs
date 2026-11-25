@@ -14,7 +14,7 @@ use serde_json::{json, Value};
 use std::{
     fs,
     os::unix::fs::PermissionsExt,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::Duration,
 };

@@ -459,6 +459,7 @@ STUCK_JOB = {
 }
 
 
+@unittest.skipUnless(playwright_works(), 'no browser here (Node, Playwright, Chromium or a built runtime missing)')
 class DrivesStuckInBrowserTests(DrivesInBrowserTests):
     """The Drives page with a job a journal waits with, its drive away (T1-18)."""
 
@@ -490,6 +491,7 @@ class DrivesStuckInBrowserTests(DrivesInBrowserTests):
                     self.assertEqual(sent[0].get('pin'), '2468')
 
 
+@unittest.skipUnless(playwright_works(), 'no browser here (Node, Playwright, Chromium or a built runtime missing)')
 class OlderBrowserTests(unittest.TestCase):
     """The page in a browser that lacks the newest built-ins, signed in, with the assistant set up."""
 
