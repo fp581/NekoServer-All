@@ -335,7 +335,10 @@ const STORAGE_FIELDS: [&str; 10] = [
     "copy",
     "array",
 ];
-const MEDIA_FIELDS: [&str; 7] = [
+// "slot" (the folder a remove names) and "backup" (the music backup's answer) were not
+// passed on before 1.0.1: "Take away" was refused with "Which folder?" and every answer
+// was taken as yes. "drive": the Extra drive a folder is made on (part C).
+const MEDIA_FIELDS: [&str; 10] = [
     "change",
     "kind",
     "path",
@@ -343,6 +346,9 @@ const MEDIA_FIELDS: [&str; 7] = [
     "downloads",
     "target",
     "use",
+    "slot",
+    "backup",
+    "drive",
 ];
 /// The request the control service gets: only the fields it knows, plus who is asking.
 /// `local` is decided here, never taken from the page.
@@ -1324,6 +1330,29 @@ mod tests {
                 "path": "/mnt/nas/tv", "how": "in_place", "downloads": false, "target": "library",
                 "use": "in_place", "token": "t"})
         );
+        // A folder taken away (its slot), the music backup's answer, and a folder made on an
+        // Extra drive (1.0.1): each reaches the control service, which checks it.
+        for (body, key, value) in [
+            (
+                json!({"change": "remove", "kind": "tv", "slot": "tv-2", "path": "/mnt/nas/tv"}),
+                "slot",
+                json!("tv-2"),
+            ),
+            (
+                json!({"change": "add", "kind": "music", "path": "/mnt/nas/m", "how": "in_place",
+                "downloads": false, "backup": false}),
+                "backup",
+                json!(false),
+            ),
+            (
+                json!({"change": "make", "kind": "movies", "drive": "d4", "downloads": true}),
+                "drive",
+                json!("d4"),
+            ),
+        ] {
+            let request = control_request("app_media_change", &body, &Who::default(), None);
+            assert_eq!(request[key], value, "{request}");
+        }
         // The Drives page's fields, for its own requests only; the PIN goes on as for unlock.
         let drive = json!({"disk": "ata-X_1", "serial": "1", "size_bytes": 9, "how": "erase",
             "confirm": "9 B 1", "pin": "123456", "kind": "photos", "to": "d3", "copy": "c",
