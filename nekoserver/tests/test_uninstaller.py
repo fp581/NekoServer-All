@@ -672,7 +672,7 @@ class ChoiceTests(unittest.TestCase):
         shown = []
         answers = iter(['1 3', '3,4', 'all', '7', ''])
         chosen = uninstaller.choose(ask=lambda prompt: next(answers), out=shown.append)
-        self.assertEqual(chosen, {'server', 'apps', 'data', 'photos', 'media', 'cloud', 'mounts'})
+        self.assertEqual(chosen, {'server', 'apps', 'data', 'photos', 'media', 'cloud', 'mounts', 'old'})
         self.assertIn(' NekoServer itself is always removed.', shown)
         self.assertTrue(any(line.startswith(' [x] 1. NekoServer itself') for line in shown))
 
