@@ -1056,14 +1056,22 @@ class Plan:
         photo archive, the apps installed there: storage.installed_line), found by its
         source or by the drive it waits for (x-systemd.requires-mounts-for). Their mount
         point is elsewhere (on the HDD, the SSD). A bind of one of the person's own folders
-        is theirs and stays."""
+        is theirs and stays. Fields are read as the paths they name: fstab writes a space as
+        \\040 ("T1\\040Films")."""
+        from existing_media import unescaped
+
         fields = line.split()
         if len(fields) < 4 or 'bind' not in fields[3].split(','):
             return False
-        if any(fields[0] == folder['path'] for folder in self.own_folders):
+        source = os.path.normpath(unescaped(fields[0]))
+        if any(source == os.path.normpath(folder['path']) for folder in self.own_folders):
             return False
-        waits = [o.split('=', 1)[1] for o in fields[3].split(',') if o.startswith('x-systemd.requires-mounts-for=')]
-        return any(place.startswith(EXTRA_MOUNTS + '/') for place in [fields[0], *waits])
+        waits = [
+            unescaped(o.split('=', 1)[1])
+            for o in fields[3].split(',')
+            if o.startswith('x-systemd.requires-mounts-for=')
+        ]
+        return any(place.startswith(EXTRA_MOUNTS + '/') for place in [source, *waits])
 
     # ---- the choices, in words a person can check
     def _group(self, key):
@@ -2481,7 +2489,9 @@ def _remove_mounts(plan, path, call, out):
     lines = plan.fstab_lines() + block
     # Binds from a drive of its own written outside setup's blocks: unmounted with what is
     # mounted inside the drives, before the drives under them.
-    inside = inside + [line.split()[1] for line in lines if plan.extra_bind(line)]
+    from existing_media import unescaped
+
+    inside = inside + [unescaped(line.split()[1]) for line in lines if plan.extra_bind(line)]
     if lines:
         kept = [line for line in path.read_text().splitlines() if line not in lines]
         backup = replace_system_file(path, '\n'.join(kept) + '\n')

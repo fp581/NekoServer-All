@@ -216,6 +216,27 @@ class ExtraDriveTests(unittest.TestCase):
         self.assertEqual(umounts[:2], [MEDIA + '/photos/archive', MEDIA + '/backups'])  # the deepest first
         self.assertTrue(self.there(D3 + '/backups/apps/nextcloud.tar'))
 
+    def test_the_person_s_folder_with_a_space_keeps_its_bind(self):
+        # T5, review of 0443aec: fstab writes "T1 Films" as T1\040Films (drill 9's folder).
+        own = D4 + '/T1 Films'
+        target = MEDIA + '/library/extra/T1 Films'
+        mine = f'{D4}/T1\\040Films {MEDIA}/library/extra/T1\\040Films none bind,ro,nofail 0 0'
+        neko = f'{D3}/my\\040backups {MEDIA}/my\\040backups none bind,nofail,x-systemd.requires-mounts-for={D3} 0 0'
+        fstab = self.system.root / 'etc/fstab'
+        fstab.write_text(fstab.read_text() + mine + '\n' + neko + '\n')
+        settings = {**MOVED, 'placement': {'movies': {'extra': [{'path': own, 'holds': 'movies', 'use': 'in_place'}]}}}
+        self.plan = self.system.plan(settings=settings)
+        self.assertNotIn(mine, self.plan.fstab_lines())
+        self.assertIn(neko, self.plan.fstab_lines())
+        mounted = {self.at(target), self.at(MEDIA + '/my backups')}
+        real = uninstaller.os.path.ismount
+        with mock.patch.object(uninstaller.os.path, 'ismount', side_effect=lambda p: str(p) in mounted or real(p)):
+            self.remove({'server', 'mounts'})
+        self.assertIn(mine, fstab.read_text())
+        umounts = [call[1] for call in self.system.calls if call[:1] == ['umount']]
+        self.assertNotIn(target, umounts)
+        self.assertIn(MEDIA + '/my backups', umounts)  # unmounted by the path, not its fstab spelling
+
 
 if __name__ == '__main__':
     unittest.main()
