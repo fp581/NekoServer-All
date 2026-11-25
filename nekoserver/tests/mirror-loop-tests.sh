@@ -9,10 +9,10 @@
 # skip there; this script refuses). Run it on the VM.
 set -u
 cd "$(dirname "$0")/.." || exit 2
-case "$(uname -r)" in *[Mm]icrosoft*)
+if [[ "$(uname -r)" == *[Mm]icrosoft* ]]; then
   echo 'Not in WSL: its kernel panics in md and takes every distro down. Run it on the VM.' >&2
-  exit 2 ;;
-esac
+  exit 2
+fi
 [[ "$(id -u)" = 0 ]] || {
   echo 'Run it as root: it makes loop devices, a Btrfs pool and an mdadm mirror.' >&2
   exit 2
