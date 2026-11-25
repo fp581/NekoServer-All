@@ -161,7 +161,8 @@ class DrivesFolderTests(unittest.TestCase):
             mode, owner = self.like()
             self.assertEqual(stat.S_IMODE(seen.st_mode), mode)
             if os.geteuid() == 0:
-                self.assertEqual((seen.st_uid, seen.st_gid), owner)
+                owned = (seen.st_uid, seen.st_gid)
+                self.assertEqual(owned, owner)
             self.assertEqual(len(said), 1)
             self.assertIn(f'{top} was closed (0700)', said[0])
             storage.drives_folder_open(self.specs(top, 'd4'), said.append, top, self.LIKE)
