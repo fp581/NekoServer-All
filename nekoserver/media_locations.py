@@ -451,7 +451,7 @@ AWAY_FOLDER = (
 )
 
 
-def drive_there(config, path):
+def folder_drive_there(config, path):
     """Refusal when the folder is on one of NekoServer's drives that is away (T1-18): an
     empty mount folder in its place was taken for the drive."""
     from neko_common import PLACE_NAMES, drive_away, place_holding
@@ -467,7 +467,7 @@ def folder_that_can_be_added(config, kind, asked):
     turns down."""
     words = WORDS[kind]
     real = os.path.realpath(asked['path'])
-    drive_there(config, asked['path'])
+    folder_drive_there(config, asked['path'])
     if any(entry['path'] in (asked['path'], real) for entry in entries_of(config, kind).values()):
         raise Refusal(ALREADY.format(path=real, words=words))
     overlapping(config, kind, real)
@@ -594,7 +594,7 @@ def target(config, asked, out):
         raise Refusal(NOT_CONNECTED.format(words=words))
     if wanted != LIBRARY:
         shown_there(asked, entries[wanted])
-        drive_there(config, entries[wanted]['path'])
+        folder_drive_there(config, entries[wanted]['path'])
     staying = existing_media.download_only(config, kind)
     before = existing_media.new_files_folder(config, kind)
     if wanted == LIBRARY:
