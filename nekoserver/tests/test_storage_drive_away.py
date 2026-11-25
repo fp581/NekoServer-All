@@ -78,6 +78,11 @@ class ProbeTests(unittest.TestCase):
         with self.findmnt(0, '\n'):
             self.assertEqual(neko_common.mounted_uuid('/srv/x'), '')
 
+    def test_of_two_mounts_on_one_folder_the_top_one_counts(self):
+        """Review of f2a8bb7: findmnt lists a hidden lower mount first; paths reach the last."""
+        with self.findmnt(0, 'd3-uuid\nanother-uuid\n'):
+            self.assertEqual(neko_common.mounted_uuid('/srv/x'), 'another-uuid')
+
     def test_the_system_disk_and_one_drive_layouts_are_there(self):
         modules = str(Path(__file__).resolve().parents[1] / 'modules')
         sys.path.insert(0, modules)
