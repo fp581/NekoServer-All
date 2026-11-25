@@ -29,7 +29,7 @@ import media_locations  # noqa: E402
 import source_import  # noqa: E402
 
 # One stand-in for findmnt, mount, umount, systemctl and docker: what it is called as
-# decides what it does. State: {"mounts": {folder: [source, type]}, "bound": {point:
+# decides what it does. State: {"mounts": {folder: [source, type, uuid?]}, "bound": {point:
 # source}, "busy": [points an app holds open]}; every call is noted in calls.log.
 STAND_IN = r'''#!/usr/bin/env python3
 import json, os, re, sys
@@ -57,7 +57,8 @@ if me == 'findmnt':
         point = path
     else:
         sys.exit(1)
-    said = {'TARGET': point, 'SOURCE': mounts[point][0], 'FSTYPE': mounts[point][1]}
+    # A mount's UUID is its third field, when the test gives one (neko_common.drive_away).
+    said = {'TARGET': point, 'SOURCE': mounts[point][0], 'FSTYPE': mounts[point][1], 'UUID': (mounts[point] + [''])[2]}
     print(' '.join(said[c] for c in columns.split(',')))
 elif me == 'mount':
     point = args[-1]
@@ -982,7 +983,7 @@ class DriveFolderTests(unittest.TestCase):
         ):
             patch.start()
             self.addCleanup(patch.stop)
-        self.pc.state['mounts'][str(self.d4)] = ['/dev/sdd1', 'ext4']
+        self.pc.state['mounts'][str(self.d4)] = ['/dev/sdd1', 'ext4', 'd4-uuid']
         self.pc.save_state()
         with self.pc.fstab.open('a') as fstab:
             fstab.write(f'UUID=d4-uuid {self.d4} ext4 defaults,nofail 0 2\n')
@@ -1138,6 +1139,20 @@ class DriveFolderTests(unittest.TestCase):
         theirs = self.make('music', downloads=False)
         self.assertIn(f'Your music in {made} is connected, used where it is.', theirs['message'])
 
+    def test_a_folder_on_d4_with_another_disk_in_its_place_is_refused(self):
+        # T1-18 (review of cb25447): drive_away's "other" covered for part C too.
+        answer = self.make('music', downloads=True)
+        self.assertEqual(answer['state'], 'done', answer)
+        made = self.d4 / 'media' / 'music'
+        self.pc.ask(change='remove', kind='music', slot='music', path=str(made))
+        before = self.pc.settings()
+        self.pc.state['mounts'][str(self.d4)] = ['/dev/sde1', 'ext4', 'another-uuid']
+        self.pc.save_state()
+        other = self.make('music', downloads=False)
+        self.assertEqual(other['state'], 'refused', other)
+        self.assertIn(f'{made} is on Extra drive d4, which is not connected now', other['message'])
+        self.assertEqual(self.pc.settings(), before)
+
     def test_a_drive_that_is_not_an_extra_drive_or_not_there_is_refused_and_nothing_is_made(self):
         before = self.pc.settings()
         for drive in ('d9', 'media'):
@@ -1153,7 +1168,7 @@ class DriveFolderTests(unittest.TestCase):
         self.assertFalse((self.d4 / 'media').exists())
         self.assertEqual(self.pc.settings(), before)
         # A link where the folder would be is not followed.
-        self.pc.state['mounts'][str(self.d4)] = ['/dev/sdd1', 'ext4']
+        self.pc.state['mounts'][str(self.d4)] = ['/dev/sdd1', 'ext4', 'd4-uuid']
         self.pc.save_state()
         (self.d4 / 'media').symlink_to(self.pc.nas)
         linked = self.make()

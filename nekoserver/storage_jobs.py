@@ -489,7 +489,14 @@ def mirror_layout(by_id, disk, like, checked, tell, folder):
     """The new disk laid out like a present member `like` of the mirror (/dev path)."""
     if not like:
         raise ValueError('a mirror member is laid out like a present one: name it (like=)')
-    shown = json.loads(run(['lsblk', '-J', '-o', 'PATH,TYPE,PKNAME,PARTN', like]))['blockdevices'][0]
+    # Asked of a running member, lsblk (util-linux 2.42) lists the array it holds first:
+    # only the member's own row says how it is laid out. Without one, nothing is erased
+    # (the first row would be the array, and the new disk laid out whole).
+    rows = json.loads(run(['lsblk', '-J', '-o', 'PATH,TYPE,PKNAME,PARTN', like]))['blockdevices']
+    real = os.path.realpath(like)
+    shown = next((row for row in rows if os.path.realpath(row.get('path') or '') == real), None)
+    if shown is None:
+        raise Refused('unknown', f'Could not read how {like} is laid out: nothing was erased.')
     tell({'phase': 'erase', 'like': like})
     checked()
     run(['wipefs', '--all', disk])
@@ -2106,14 +2113,27 @@ def mirror_context(job):
         done = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, check=False)
         return done.returncode, done.stdout + done.stderr
 
-    return mirror_add.Context(
-        run=ran,
-        erase=lambda *given, **named: erase(*given, config=job.config, **named),
-        refused=Refused,
-        journal=lambda phase, committed=False, undo=None: job.journal(phase, committed, **(undo or {})),
-        progress=job.progress,
-        clear=lambda: (job.state / JOURNAL).unlink(missing_ok=True),
-    )
+    named = {
+        'run': ran,
+        'erase': lambda *given, **more: erase(*given, config=job.config, **more),
+        'refused': Refused,
+        'journal': lambda phase, committed=False, undo=None: job.journal(phase, committed, **(undo or {})),
+        'progress': job.progress,
+        'clear': lambda: (job.state / JOURNAL).unlink(missing_ok=True),
+        # T1-18 for job D (T2, 57eb40c): the mirror's drive checked before the erase, the
+        # add and a cut-off finish. Always given, so a Context without it fails loudly.
+        'away': lambda folder: mirror_drive_away(job.config, folder),
+    }
+    return mirror_add.Context(**named)
+
+
+def mirror_drive_away(config, folder):
+    """None when the drive that holds `folder` (a mirror's mount) is there and the one the
+    settings name; "missing" or "other" when not; None for a folder on no drive of theirs."""
+    from neko_common import drive_away, place_holding
+
+    place = place_holding(config, folder)
+    return drive_away(config, place) if place else None
 
 
 def mirror_job(job):
@@ -2252,12 +2272,24 @@ def give_up(job, stuck):
             words = 'The job was given up. The old copy is deleted when its drive is back.'
         elif cut.action == 'use' and undo.get('drive'):
             words = give_up_drive(cut, undo['drive'])
+        elif cut.action == 'mirror_add':
+            words = mirror_given_up(undo)
         else:
             cut.reapply(stuck)
             words = 'The job was given up. Run setup again (sudo bash install.sh) so every app is as the settings say.'
         cut.result('failed', words)
         cut.done()
     return 1
+
+
+def mirror_given_up(undo):
+    """The words for a mirror's rebuild let go (T5, review of 6940d3f: its pool may never
+    come back, and setup does not rebuild a mirror): the recovery page's row for it."""
+    said = 'The job was given up: the new drive was not made part of the mirror, which goes on with the drives it has.'
+    # Each row named whole, so the docs test finds it in RECOVERY.md.
+    if str(undo.get('array') or '').startswith('md-'):
+        return said + ' To replace the failed drive, see RECOVERY.md, "A drive of a RAID array failed".'
+    return said + ' To replace the failed drive, see RECOVERY.md, "A drive of a Btrfs pool failed".'
 
 
 def give_up_drive(job, drive):

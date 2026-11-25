@@ -327,6 +327,10 @@ def extra_records(settings):
     }
 
 
+# Where the Media folders page makes a folder on an Extra drive (part C): <dN>/media/<kind>.
+MADE_TOP = 'media'
+
+
 def own_folders(settings):
     """The person's own folders setup uses where they are (existing media, "extra" in a
     row of the placement table) and the shared folders they are on: [{'path', 'what',
@@ -354,6 +358,7 @@ def own_folder(entry):
         'what': str(entry.get('holds') or 'media'),
         'share': text('share'),
         'mount': text('mount'),
+        'made': text('made'),
     }
 
 
@@ -1017,6 +1022,9 @@ class Plan:
                 known[drive].add(name)
         for name in self.placed:
             known[EXTRA + name] = {n for key, *_ in CHOICES for n in self.group_drive_names(name, key)}
+            # The folder that holds what the Media folders page made there (named above).
+            if any(self.made_on(folder) == name for folder in self.own_folders):
+                known[EXTRA + name].add(MADE_TOP)
         found = []
         for drive in self.drives:
             found.extend(
@@ -1298,7 +1306,7 @@ class Plan:
             lines.append('   - ' + self.external + ' (the USB drive: the weekly copy, when it is plugged in)')
         for name, (_record, holds) in sorted(self.placed.items()):
             lines.append('   - ' + self.mount_of(EXTRA + name) + ' (a drive of its own: ' + held_words(holds) + ')')
-            lines.extend(self.held_on(EXTRA + name) + self.old_lines(EXTRA + name))
+            lines.extend(self.held_on(EXTRA + name) + self.made_lines(name) + self.old_lines(EXTRA + name))
         for folder in self.unnamed_extra():
             lines.append(
                 '   - '
@@ -1306,6 +1314,8 @@ class Plan:
                 + " (a drive the settings do not name: nothing on it is removed; it is unmounted with the mounts)"
             )
         for folder in self.own_folders:
+            if self.made_on(folder):
+                continue  # named under its drive, above
             shared = ':' in folder['share'] or folder['share'].startswith('//')
             lines.append(
                 '   - '
@@ -1331,6 +1341,28 @@ class Plan:
             + ' from a move on the Drives page; kept unless you choose '
             + str(OLD_NUMBER)
             for p in self.old_copies(drive)
+        ]
+
+    def made_on(self, folder):
+        """The Extra drive a folder of the person's was made on by the Media folders page
+        (part C: <dN>/media/<kind>, saved with "made": "dN"), when it is one the plan names
+        and the folder is on it; else ''."""
+        name = folder.get('made', '')
+        if name not in self.placed:
+            return ''
+        return name if Path(folder['path']).parent.parent == Path(self.mount_of(EXTRA + name)) else ''
+
+    def made_lines(self, name):
+        """The folders the Media folders page made on drive `name` for the person's films,
+        shows or music: theirs, so kept whatever is chosen (T3-101-4)."""
+        return [
+            '       '
+            + folder['path']
+            + ': made by the Media folders page for '
+            + WHAT_WORDS.get(folder['what'], folder['what'])
+            + ': your own folder: kept, never removed'
+            for folder in self.own_folders
+            if self.made_on(folder) == name
         ]
 
     def held_on(self, drive):

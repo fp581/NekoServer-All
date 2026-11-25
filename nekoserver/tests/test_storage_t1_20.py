@@ -99,5 +99,79 @@ class StuckAddTests(Jobs):
         self.assertEqual(self.saved()['storage']['d5']['uuid'], 'new-uuid')
 
 
+class MirrorTests(Jobs):
+    """T2's job D (57eb40c): mirror_add.Context asks away(folder) of the mirror's mount
+    folder before the erase, the add and a cut-off finish; storage_jobs wires the drive
+    check (T1-18) into it."""
+
+    def test_the_mirror_job_is_given_the_drive_check(self):
+        import mirror_add
+
+        given = {}
+
+        def context(**named):
+            given.update(named)
+
+        with mock.patch.object(mirror_add, 'Context', context):
+            job = storage_jobs.Job(
+                {'id': ID, 'job': 'mirror_add'}, self.config, self.settings, self.root / 'state', self.root / 'run'
+            )
+            storage_jobs.mirror_context(job)
+        self.assertIsNone(given['away'](self.root / 'drives/d3/pool'))
+        self.unplug('d3')
+        self.assertEqual(given['away'](self.root / 'drives/d3'), 'missing')
+        self.assertIsNone(given['away']('/nowhere'))
+
+    def test_a_mirror_job_that_takes_no_drive_check_fails_loudly(self):
+        import mirror_add
+
+        def context(*, run, erase, refused, journal, progress, clear):
+            raise AssertionError('never built without the drive check')
+
+        with mock.patch.object(mirror_add, 'Context', context):
+            job = storage_jobs.Job(
+                {'id': ID, 'job': 'mirror_add'}, self.config, self.settings, self.root / 'state', self.root / 'run'
+            )
+            with self.assertRaises(TypeError):
+                storage_jobs.mirror_context(job)
+
+
+def mirror_journal(root, array):
+    storage_jobs.write_state(
+        'journal.json',
+        {
+            'id': ID,
+            'job': 'mirror_add',
+            'phase': 'rebuild',
+            'committed': True,
+            'boot': 'before',
+            'started_at': 1.0,
+            'request': {'format': storage_jobs.FORMAT, 'id': ID, 'job': 'mirror_add'},
+            'undo': {'array': array, 'member': '/dev/sdc1', 'runs': 3},
+        },
+        Path(root) / 'state',
+    )
+
+
+class MirrorGiveUpTests(Jobs):
+    """T5, review of T2's 6940d3f: a cut-off rebuild whose pool never comes back has only
+    "Give it up"; it is taken (cut_places has no drive for it) and says where to go on."""
+
+    def test_a_btrfs_rebuild_given_up_points_to_the_recovery_page(self):
+        mirror_journal(self.root, 'btrfs-0123abcd-4567')
+        self.assertEqual(self.run_job('give_up'), 1)
+        self.assertIsNone(saved_journal(self.root))
+        said = last_result(self.root)['message']
+        self.assertIn('RECOVERY.md', said)
+        self.assertIn('A drive of a Btrfs pool failed', said)
+        self.assertNotIn('Run setup again', said)
+
+    def test_an_md_rebuild_given_up_points_to_the_raid_row(self):
+        mirror_journal(self.root, 'md-md0')
+        self.assertEqual(self.run_job('give_up'), 1)
+        self.assertIsNone(saved_journal(self.root))
+        self.assertIn('A drive of a RAID array failed', last_result(self.root)['message'])
+
+
 if __name__ == '__main__':
     unittest.main()
