@@ -95,8 +95,11 @@ def media_answer():
                 'new_files': False,
                 'ready': False,
                 'reason': 'Your films are not there now (nas:/volume1/a-very-long-shared-folder-name is not connected).',
+                'made': None,
             }
         ],
+        # The Extra drives a folder can be made on (part C, 1.0.1).
+        'drives': [{'drive': 'd4', 'words': 'Extra drive d4', 'path': '/mnt/nekoserver-drives/d4/media/movies'}],
         'copies': [],
         'room': 7,
         'full': None,
@@ -354,6 +357,36 @@ class MediaFoldersInBrowserTests(unittest.TestCase):
         self.assertEqual(
             {k: sent[-1][k] for k in ('kind', 'path', 'how', 'downloads')},
             {'kind': 'movies', 'path': '/mnt/nas/new films', 'how': 'in_place', 'downloads': True},
+        )
+
+    def test_a_new_folder_on_an_extra_drive_is_asked_for_by_the_drive_alone(self):
+        # Part C (1.0.1): the Drives page's "Use for films, shows or music" opens the form
+        # with the drive chosen; no path is typed or sent.
+        (answer,) = self.browse(('mediaMake', {'width': 390}))
+        self.assertEqual(answer['errors'], [])
+        self.assertEqual(
+            answer['shown'],
+            {
+                'how': True,
+                'drive': 'd4',
+                'path': True,
+                'note': 'NekoServer makes /mnt/nekoserver-drives/d4/media/movies for the apps. '
+                'Nothing else on the drive is changed.',
+                'button': 'Make the folder',
+            },
+        )
+        sent = [r for r in self.control.asked if r.get('op') == 'app_media_change' and r.get('change') == 'make']
+        self.assertEqual(
+            {k: sent[-1].get(k) for k in ('change', 'kind', 'drive', 'downloads', 'path', 'how', 'backup')},
+            {
+                'change': 'make',
+                'kind': 'movies',
+                'drive': 'd4',
+                'downloads': True,
+                'path': None,
+                'how': None,
+                'backup': None,
+            },
         )
 
     def test_the_page_fits_a_phone(self):

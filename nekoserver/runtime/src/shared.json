@@ -145,7 +145,7 @@
     "lock": "lock",
     "format": "neko-media-folders-v1",
     "kinds": ["movies", "tv", "music"],
-    "changes": ["look", "add", "remove", "target"],
+    "changes": ["look", "add", "remove", "target", "make"],
     "how": ["in_place", "copy"],
     "_folders_per_kind": "How many folders of the person's one kind (films, shows or music) may have connected, the one for new downloads counted (existing_media.extras refuses more). `full` says so, on the page and in setup.",
     "folders_per_kind": 8,

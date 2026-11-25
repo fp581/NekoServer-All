@@ -175,6 +175,27 @@ const CHECKS = {
     await page.waitForTimeout(500);
     return { shown, dialog, errors: page.errorsSeen };
   },
+  /* "Use for films, shows or music" on an Extra drive (the Drives page's button, part C):
+     the Media folders form with "A new folder on an Extra drive" chosen for that drive, new
+     downloads ticked and the form sent. What the form showed, and focus left on the drive. */
+  async mediaMake(browser, { width }) {
+    const page = await open(browser, 'media', width);
+    await page.waitForSelector('#media-path');
+    await page.evaluate(() => useDriveForMedia('d4'));
+    await page.waitForSelector('#media-drive:not([hidden])');
+    await until(page, () => !document.getElementById('media-drive').closest('label').hidden);
+    const shown = await page.evaluate(() => ({
+      how: document.querySelector('#media-how-made').checked,
+      drive: document.getElementById('media-drive').value,
+      path: document.getElementById('media-path').closest('label').hidden,
+      note: document.querySelector('.media-how .hint').textContent,
+      button: document.querySelector('.media-form button[type=submit]').textContent
+    }));
+    await page.check('#media-downloads');
+    await page.click('.media-form button[type=submit]');
+    await page.waitForTimeout(500);
+    return { shown, errors: page.errorsSeen };
+  },
   /* How wide the page is at `width`: [its scroll width, the window's, whether the page's
      title and the buttons beside it overlap]. */
   async pageWidth(browser, { route, width }) {
