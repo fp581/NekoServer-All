@@ -858,6 +858,9 @@ class Job:
     def __init__(self, request, config, settings_files, state=None, folder=None, out=print):
         self.request, self.config, self.settings_files = request, config, list(settings_files)
         self.state, self.folder, self.out = Path(state or STATE), Path(folder or RUN_FOLDER), out
+        # Where the places are recorded on the OS disk (T1-17); a test's own state folder
+        # keeps its record beside its journal.
+        self.record = Path(state) / 'places.json' if state else None
         self.id, self.action = request['id'], request['job']
         self.started = time.time()
 
@@ -927,8 +930,11 @@ class Job:
             path.unlink(missing_ok=True)
 
     def save_settings(self):
-        from neko_common import atomic_json
+        from neko_common import atomic_json, write_places
 
+        # The record first: a my-config.json this job does not know of (where a release
+        # was unpacked) is brought up to date from it by the next tool that reads it (T1-17).
+        write_places(self.config, self.record)
         for path in self.settings_files:
             atomic_json(path, self.config)
 
@@ -2069,7 +2075,7 @@ def finish_mirror(job, saved):
 def main(argv=None):
     import argparse
 
-    from neko_common import read_settings
+    from neko_common import read_settings, take_places
 
     parser = argparse.ArgumentParser(description='The Drives page\'s root jobs (storage from the dashboard).')
     parser.add_argument('action', choices=('run', 'resume', 'finish'))
@@ -2077,6 +2083,7 @@ def main(argv=None):
     parser.add_argument('--request', default=str(REQUEST))
     given = parser.parse_args(argv)
     config = read_settings(given.config[0])
+    take_places(config, given.config)
     if given.action == 'run':
         return run_request(read_request(request_path(given.request)), config, given.config)
     return (resume if given.action == 'resume' else finish)(config, given.config)

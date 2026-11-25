@@ -1269,6 +1269,108 @@ def extra_drives(config):
     }
 
 
+# Where the Drives page last put things (T1-17): the Extra drives and "locations", on the
+# OS disk. A Drives job writes it at each commit point, beside the settings files it knows;
+# a my-config.json elsewhere (where a release was unpacked) does not get the change, and
+# setup, the uninstaller, recovery and migrate.py, started with that file after the SSD was
+# lost, took it as it was. Only a server whose owner used the Drives page has one. The SSD
+# and the media drive are not in it: a new SSD is the settings file's own.
+PLACES_RECORD = Path('/etc/nekoserver-os/places.json')
+PLACE_NAMES = {'ssd': 'the apps drive', 'media': 'the media and backups drive'}
+KIND_NAMES = {
+    'backups': 'backups',
+    'photos': 'photos',
+    'movies': 'films and shows',
+    'music': 'music',
+    'cloud': 'Nextcloud files',
+}
+
+
+def places_of(config):
+    """The part of the settings the record holds."""
+    locations = config.get('locations')
+    return {
+        'storage': json.loads(json.dumps(extra_drives(config))),
+        'locations': json.loads(json.dumps(locations)) if isinstance(locations, dict) else {},
+    }
+
+
+def write_places(config, record=None):
+    """The record written (atomic, fsynced) from these settings."""
+    atomic_json(record or PLACES_RECORD, places_of(config))
+
+
+def read_places(record=None):
+    """The record, or None when there is none (or it can not be read: then the settings file
+    is used as before)."""
+    try:
+        value = json.loads(Path(record or PLACES_RECORD).read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return None
+    if (
+        not isinstance(value, dict)
+        or not isinstance(value.get('storage'), dict)
+        or not isinstance(value.get('locations'), dict)
+    ):
+        return None
+    return value
+
+
+def current_places(config, record=None):
+    """(settings, line): the settings with the record's Extra drives and places when they
+    differ from these, and the line that says so; (the same settings, None) otherwise."""
+    record = Path(record or PLACES_RECORD)
+    saved = read_places(record)
+    if saved is None or places_of(config) == {'storage': saved['storage'], 'locations': saved['locations']}:
+        return config, None
+    new = json.loads(json.dumps(config))
+    storage = new['storage'] if isinstance(new.get('storage'), dict) else {}
+    for name in extra_drives(new):
+        del storage[name]
+    storage.update(json.loads(json.dumps(saved['storage'])))
+    new['storage'] = storage
+    if saved['locations']:
+        new['locations'] = json.loads(json.dumps(saved['locations']))
+    else:
+        new.pop('locations', None)
+    said = [
+        f'{KIND_NAMES.get(kind, kind)} on {PLACE_NAMES.get(place) or "Extra drive " + str(place)}'
+        for kind, place in sorted(saved['locations'].items())
+    ]
+    line = (
+        "This server's data was moved from the dashboard; using its current places"
+        + (': ' + ', '.join(said) if said else ': everything on the apps and media drives')
+        + f' (from {record}; the settings file is brought up to date).'
+    )
+    return new, line
+
+
+def take_places(config, paths=(), out=print, record=None):
+    """The record's places put into `config` (changed in place) and into each settings file
+    in `paths` that is there (best effort: one that can not be written is said), with one
+    line. True when the record was used."""
+    new, line = current_places(config, record)
+    if line is None:
+        return False
+    config.clear()
+    config.update(new)
+    out(line)
+    for path in dict.fromkeys(Path(p) for p in paths if p):
+        try:
+            now = json.loads(path.read_text(encoding='utf-8'))
+            if not isinstance(now, dict):
+                continue
+            fixed, _ = current_places(now, record)
+            if fixed is not now:
+                owner = path.stat()
+                atomic_json(path, fixed)
+                if os.geteuid() == 0:
+                    os.chown(path, owner.st_uid, owner.st_gid, follow_symlinks=False)
+        except (OSError, ValueError, RuntimeError) as error:
+            out(f'{path} could not be brought up to date ({error}); the places above are used anyway.')
+    return True
+
+
 def not_a_drive(config, drive):
     """Why `drive` is no drive of these settings, in words."""
     storage = config.get('storage')

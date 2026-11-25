@@ -108,7 +108,9 @@ def main(argv=None):
 def read_settings(path):
     """(the settings, None), or (None, what is wrong with the file, named)."""
     try:
-        return neko_common.read_settings(path), None
+        config = neko_common.read_settings(path)
+        neko_common.take_places(config, [path])  # the Drives page's places (T1-17)
+        return config, None
     except RuntimeError as exc:
         return None, f'{exc}.'
 
