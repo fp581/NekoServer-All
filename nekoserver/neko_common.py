@@ -1340,7 +1340,7 @@ def current_places(config, record=None):
     line = (
         "This server's data was moved from the dashboard; using its current places"
         + (': ' + ', '.join(said) if said else ': everything on the apps and media drives')
-        + f' (from {record}; the settings file is brought up to date).'
+        + f' (from {record}).'
     )
     return new, line
 
@@ -1354,7 +1354,7 @@ def take_places(config, paths=(), out=print, record=None):
         return False
     config.clear()
     config.update(new)
-    out(line)
+    written, failed = [], []
     for path in dict.fromkeys(Path(p) for p in paths if p):
         try:
             now = json.loads(path.read_text(encoding='utf-8'))
@@ -1366,8 +1366,12 @@ def take_places(config, paths=(), out=print, record=None):
                 atomic_json(path, fixed)
                 if os.geteuid() == 0:
                     os.chown(path, owner.st_uid, owner.st_gid, follow_symlinks=False)
+                written.append(str(path))
         except (OSError, ValueError, RuntimeError) as error:
-            out(f'{path} could not be brought up to date ({error}); the places above are used anyway.')
+            failed.append(f'{path} could not be ({error}): the places above are used anyway')
+    # One line: what is used, and only what was really written (a --dry-run writes none).
+    done = [f'{", ".join(written)} brought up to date'] if written else []
+    out(line + ''.join(f' {part[0].upper()}{part[1:]}.' for part in done + failed))
     return True
 
 

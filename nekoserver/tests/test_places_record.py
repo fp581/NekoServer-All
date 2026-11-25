@@ -114,6 +114,7 @@ class RecordTests(Folder):
         config, said = json.loads(path.read_text()), []
         self.assertTrue(neko_common.take_places(config, [path], out=said.append))
         self.assertEqual(len(said), 1)
+        self.assertTrue(said[0].endswith(f'(from {self.record}). {path} brought up to date.'), said[0])
         saved = json.loads(path.read_text())
         self.assertEqual(saved['locations'], moved())
         self.assertEqual(saved['storage']['data_ssd'], NEW_SSD)
@@ -148,6 +149,15 @@ class ToolTests(Folder):
         self.assertEqual(config['locations'], moved())
         self.assertNotIn('locations', json.loads(self.path.read_text()))
         self.assertIn('moved from the dashboard', out.getvalue())
+        self.assertNotIn('brought up to date', out.getvalue())  # nothing was written
+
+    def test_a_file_that_can_not_be_written_is_said_in_the_same_line(self):
+        said = []
+        config = json.loads(self.path.read_text())
+        with mock.patch.object(neko_common, 'atomic_json', side_effect=OSError('read-only')):
+            neko_common.take_places(config, [self.path], out=said.append)
+        self.assertEqual(len(said), 1)
+        self.assertIn(f'{self.path} could not be (read-only): the places above are used anyway.', said[0])
 
     def test_setup_keeps_the_record_in_step_and_makes_none(self):
         import installer
