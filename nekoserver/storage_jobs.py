@@ -641,8 +641,88 @@ def targets(config, kind, size):
         if to == place_of(config, kind):
             continue
         why = target_problem(config, kind, to, size)
-        found.append({'to': to, 'words': place_words(to), 'ok': why is None, 'why_not': why})
+        beside = beside_backups(config, kind, to) if why is None else []
+        found.append(
+            {
+                'to': to,
+                'words': place_words(to),
+                'ok': why is None,
+                'why_not': why,
+                'beside': beside,
+                'beside_words': beside_words(config, beside) if beside else None,
+            }
+        )
     return found
+
+
+# What the backups protect on the drive they go to: the photos (their archive) and the
+# music (its nightly copy). A backup on the drive it protects is no help when that drive
+# is lost (backup_plan.same_drive, the backups page's "same drive").
+BACKED_UP = ('photos', 'music')
+
+
+def backed_up_here(config, kind):
+    """This server backs `kind` up onto the backups' drive."""
+    from neko_common import media_group, music_backed_up
+
+    return media_group(config, 'photos') if kind == 'photos' else music_backed_up(config)
+
+
+def on_one_drive(config, a, b):
+    try:
+        return same_drive(root_of(config, a), root_of(config, b))
+    except (RuntimeError, KeyError, TypeError):
+        return False
+
+
+def beside_backups(config, kind, to):
+    """The kinds that would be backed up on the drive they are on once `kind` is on `to`
+    and are not now: the backups moved onto the photos' or the music's drive, or the
+    photos or the music moved onto the backups' drive."""
+    if kind == 'backups':
+        return [
+            k
+            for k in BACKED_UP
+            if backed_up_here(config, k)
+            and on_one_drive(config, place_of(config, k), to)
+            and not on_one_drive(config, place_of(config, k), place_of(config, 'backups'))
+        ]
+    if kind in BACKED_UP and backed_up_here(config, kind):
+        backups = place_of(config, 'backups')
+        if on_one_drive(config, to, backups) and not on_one_drive(config, place_of(config, kind), backups):
+            return [kind]
+    return []
+
+
+def beside_now(config):
+    """The kinds backed up on the drive they are on now (the Drives page's "same drive")."""
+    backups = place_of(config, 'backups')
+    return [k for k in BACKED_UP if backed_up_here(config, k) and on_one_drive(config, place_of(config, k), backups)]
+
+
+def weekly_copy_drive(config):
+    import placement
+
+    try:
+        return placement.drive_of(config, placement.OFFLINE, placement.DATA)
+    except (KeyError, RuntimeError):
+        return None
+
+
+def beside_words(config, kinds):
+    """What the move window says of a move that backs `kinds` up on their own drive."""
+    names = ' and '.join(KIND_WORDS[k] for k in kinds)
+    said = (
+        f'Your {names} would then be backed up on the drive they are on. That backup protects you from a '
+        'mistake (a file deleted or changed), not from losing that drive.'
+    )
+    if 'photos' in kinds:
+        said += ' The weekly copy on the USB drive is the one that survives losing it' + (
+            '.' if weekly_copy_drive(config) else ', and no USB drive is set up for it yet.'
+        )
+    if 'music' in kinds:
+        said += ' Music is not in the weekly USB copy: losing that drive loses your music and its backup.'
+    return said
 
 
 def old_copies(config, measure=du):
@@ -834,6 +914,7 @@ def look(config, world=None, measure=du, arrays=None):
         'sizes': sizes,
         'targets': kinds_targets,
         'old_copies': copies,
+        'same_drive': beside_now(config),
     }
 
 
@@ -1264,6 +1345,12 @@ def move(job):
     problem = target_problem(job.config, kind, to, size)
     if problem:
         raise Stop(problem + ' Nothing was changed.')
+    beside = beside_backups(job.config, kind, to)
+    if beside and job.request.get('beside_ok') is not True:
+        raise Stop(
+            beside_words(job.config, beside) + ' Tick that you understand in the move window to move them anyway. '
+            'Nothing was changed.'
+        )
     staging = root_of(job.config, to) / NEW_COPY.format(kind=kind, id=job.id)
     new = paths(job.config, kind, to, staging)
     for folder in paths(job.config, kind, to):

@@ -6655,6 +6655,10 @@ function moveDialog(k, busy) {
       const go = button(
         'Move here',
         () => {
+          if (besideTick(t)) {
+            besideDialog(k, t);
+            return;
+          }
           $('dialog').close();
           void drivesChange(
             'data-move',
@@ -6734,9 +6738,55 @@ function oldCopyRow(k, busy, signed) {
   }
   return row;
 }
+/* Where a kind is, as its card says it: [state, label, words or null]. A kind backed up on
+ * the drive it is on says so, in the backups page's words (storage_jobs.py beside_now). */
+const SAME_DRIVE_WORDS =
+  'Its backup is on the same drive: it protects against a mistake, not against losing that drive. Only the weekly copy on the USB drive is on another drive.';
+function kindPlace(k) {
+  const where = text(k.place_words, 'Not known');
+  return k.same_drive === true
+    ? ['warning', where + ' · same drive as its backup', SAME_DRIVE_WORDS]
+    : ['pass', where, null];
+}
+/* A move that backs a kind up on its own drive needs its own tick (storage_jobs.py). */
+function besideTick(t) {
+  return words(object(t).beside).length > 0;
+}
+function besideDialog(k, t) {
+  const tick = el('input');
+  tick.type = 'checkbox';
+  tick.id = 'drive-beside-ack';
+  const label = el('label', 'field check', 'I understand: their backup would be on the same drive as them.');
+  label.prepend(tick);
+  const go = button(
+    'Move here',
+    () => {
+      $('dialog').close();
+      void drivesChange(
+        'data-move',
+        { kind: k.kind, to: t.to, beside_ok: true },
+        'Moving your ' + text(k.words).toLowerCase() + '…'
+      );
+    },
+    'button small'
+  );
+  go.disabled = true;
+  tick.addEventListener('change', () => {
+    go.disabled = !tick.checked;
+  });
+  openDialog('MOVE ' + text(k.words, 'data').toUpperCase(), 'Move to ' + text(t.words, t.to) + '?', [
+    el('p', '', text(t.beside_words)),
+    label,
+    go
+  ]);
+}
 function kindCard(k, busy, signed, outcome) {
   const card = el('article', 'card drive-kind');
-  card.append(cardHeading(text(k.words, k.kind), badge('pass', text(k.place_words, 'Not known'))));
+  const [placeState, placeLabel, placeWords] = kindPlace(k);
+  card.append(cardHeading(text(k.words, k.kind), badge(placeState, placeLabel)));
+  if (placeWords) {
+    card.append(hint(placeWords));
+  }
   card.append(
     el(
       'p',

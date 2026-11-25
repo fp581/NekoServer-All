@@ -104,6 +104,27 @@ class DrivesPageTests(unittest.TestCase):
             ],
         )
 
+    def test_a_kind_backed_up_on_its_own_drive_says_same_drive(self):
+        said = page(
+            ('kindPlace', {'place_words': 'Extra drive d3', 'same_drive': True}),
+            ('kindPlace', {'place_words': 'Extra drive d3', 'same_drive': False}),
+            ('kindPlace', {}),
+        )
+        self.assertEqual(said[0][:2], ['warning', 'Extra drive d3 · same drive as its backup'])
+        self.assertIn('not against losing that drive', said[0][2])
+        self.assertEqual(said[1], ['pass', 'Extra drive d3', None])
+        self.assertEqual(said[2], ['pass', 'Not known', None])
+
+    def test_a_move_beside_the_backups_needs_its_own_tick(self):
+        said = page(
+            ('besideTick', {'beside': ['photos']}),
+            ('besideTick', {'beside': []}),
+            ('besideTick', {}),
+        )
+        self.assertEqual(said, [True, False, False])
+        source = (ROOT / 'dashboard/app.js').read_text()
+        self.assertIn('beside_ok: true', source)
+
     def test_the_page_is_in_the_menu_and_needs_the_control_service(self):
         html = (ROOT / 'dashboard/index.html').read_text(encoding='utf-8')
         nav = re.findall(r'data-route="([a-z]+)"', html)

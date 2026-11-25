@@ -68,6 +68,8 @@ class Jobs(unittest.TestCase):
             mock.patch.object(storage_jobs, 'free_bytes', return_value=100 * GB),
             mock.patch.object(storage_jobs, 'du', return_value=0),
             mock.patch.object(storage_jobs, 'steps_working', lambda config: []),
+            # Nothing is backed up beside itself here (test_storage_beside_backups has the real one).
+            mock.patch.object(storage_jobs, 'beside_backups', lambda config, kind, to: []),
             mock.patch.object(
                 storage_jobs, 'setup_again', lambda job: self.setups.append(json.loads(json.dumps(job.config)))
             ),
