@@ -1401,7 +1401,7 @@ def mounted_uuid(folder):
     if found.returncode != 0:
         return None  # findmnt finds nothing mounted there
     words = found.stdout.split()
-    return words[0] if words else ''
+    return words[-1] if words else ''  # the top mount, the one paths reach
 
 
 def drive_away(config, place):
