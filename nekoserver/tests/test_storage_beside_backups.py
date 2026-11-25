@@ -52,6 +52,15 @@ class BesideTests(Jobs):
         music = {t['to']: t for t in storage_jobs.targets(self.config, 'music', 0)}['d3']['beside_words']
         self.assertIn('Music is not in the weekly USB copy', music)
 
+    def test_music_alone_is_one_thing_in_the_words(self):
+        # "Your music would then be backed up on the drive they are on" (T3 on bd05f7b).
+        music = {t['to']: t for t in storage_jobs.targets(self.config, 'music', 0)}['d3']['beside_words']
+        self.assertIn('Your music would then be backed up on the drive it is on.', music)
+        both = storage_jobs.beside_words(self.config, ['photos', 'music'])
+        self.assertIn('Your photos and music would then be backed up on the drive they are on.', both)
+        self.assertEqual(self.run_job('move', kind='music', to='d3'), 1)
+        self.assertIn('to move it anyway', last_result(self.root)['message'])
+
     def test_the_move_is_refused_without_the_tick_and_made_with_it(self):
         self.assertEqual(self.run_job('move', kind='photos', to='d3'), 1)
         self.assertIn('Tick', last_result(self.root)['message'])

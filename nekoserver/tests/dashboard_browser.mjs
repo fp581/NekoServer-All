@@ -104,6 +104,68 @@ const CHECKS = {
     await page.waitForTimeout(500);
     return { picked, steps };
   },
+  /* The Drives page in `look` at `width`: each kind card's badge and words, then the
+     music moved onto the backups' drive: the move window's tick before "Move here", and
+     whether the page and the window fit. */
+  async drivesBeside(browser, { width, look }) {
+    const page = await open(browser, 'drives', width, [], look);
+    await page.waitForSelector('.drive-kind button');
+    const fits = () =>
+      page.evaluate(() => {
+        const dialog = document.getElementById('dialog');
+        const wide = [document.documentElement, ...(dialog.open ? [dialog] : [])].filter(
+          n => n.scrollWidth > n.clientWidth + 1
+        );
+        return wide.map(n => n.id || n.tagName);
+      });
+    const cards = await page.evaluate(() =>
+      [...document.querySelectorAll('.drive-kind')].map(c => ({
+        badge: c.querySelector('.badge').textContent.trim(),
+        hints: [...c.querySelectorAll('.hint')].map(h => h.textContent.trim())
+      }))
+    );
+    const pageWide = await fits();
+    await page.click('[aria-label="Move music to another drive"]');
+    await page.click('[aria-label="Move to Media and backups drive"]');
+    await page.waitForSelector('#drive-beside-ack');
+    const go = '#dialog button:text-is("Move here")';
+    const before = await page.evaluate(() => ({
+      words: document.querySelector('#dialog p').textContent,
+      tick: document.querySelector('#drive-beside-ack').closest('label').textContent.trim(),
+      off: [...document.querySelectorAll('#dialog button')].find(b => b.textContent === 'Move here').disabled
+    }));
+    const dialogWide = await fits();
+    await page.check('#drive-beside-ack');
+    const on = await page.evaluate(
+      () => ![...document.querySelectorAll('#dialog button')].find(b => b.textContent === 'Move here').disabled
+    );
+    await page.click(go);
+    await page.waitForTimeout(500);
+    return { cards, before, on, wide: [...pageWide, ...dialogWide], errors: page.errorsSeen };
+  },
+  /* The Drives page with a job a journal waits with: what it says, which buttons are
+     offered and on, then "Give it up" with the PIN; whether the page fits. */
+  async drivesStuck(browser, { width, look }) {
+    const page = await open(browser, 'drives', width, [], look);
+    await page.waitForSelector('.drive-needs');
+    const shown = await page.evaluate(() => ({
+      title: document.querySelector('.media-outcome .badge').textContent.trim(),
+      needs: [...document.querySelectorAll('.drive-needs li')].map(li => li.textContent),
+      buttons: [...document.querySelectorAll('.media-outcome button')].map(b => [b.textContent, b.disabled]),
+      wide: document.documentElement.scrollWidth > document.documentElement.clientWidth + 1
+    }));
+    await page.click('.media-outcome button:text-is("Give it up")');
+    await page.waitForSelector('#drive-pin');
+    const dialog = await page.evaluate(() => ({
+      typed: document.getElementById('drive-confirm') !== null,
+      focused: document.activeElement.id,
+      wide: document.getElementById('dialog').scrollWidth > document.getElementById('dialog').clientWidth + 1
+    }));
+    await page.fill('#drive-pin', '2468');
+    await page.click('#dialog button[type=submit]');
+    await page.waitForTimeout(500);
+    return { shown, dialog, errors: page.errorsSeen };
+  },
   /* How wide the page is at `width`: [its scroll width, the window's, whether the page's
      title and the buttons beside it overlap]. */
   async pageWidth(browser, { route, width }) {

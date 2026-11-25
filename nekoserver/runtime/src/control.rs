@@ -1076,15 +1076,15 @@ fn media_request(service: &Arc<Service>, config: &Path, op: &str, request: &Valu
 /// A request of the Drives page (the PIN is already checked). A job needs the app SSD:
 /// the code that runs it, and the settings, are kept there.
 fn storage_request(service: &Arc<Service>, config: &Path, op: &str, request: &Value) -> Value {
+    let cfg = common::json(config, 64000);
     if op != "app_storage_state" {
-        let cfg = common::json(config, 64000);
         let connected = common::mount_path(cfg["data_mount"].as_str().unwrap_or(""))
             .and_then(|data| crate::backup::guard_data(config, &data));
         if connected.is_err() {
             return refuse("E47", "The app SSD is not connected, so your drives can't be changed now. Nothing was changed. Connect it (or restart the server), then try again.");
         }
     }
-    storage::answer(&service.storage, op, request)
+    storage::answer(&service.storage, op, request, &cfg)
         .unwrap_or_else(|| refuse("E42", "Request not supported"))
 }
 /// Ask Neko's three requests (the PIN is already checked). The app SSD must be the one
@@ -2253,6 +2253,13 @@ mod tests {
         assert_eq!(answer(&s, &delete)["error"], "E44");
         delete["pin"] = json!("2468");
         assert_eq!(answer(&s, &delete)["error"], "E47");
+        // Try again and Give it up (T1-18): the PIN again too.
+        for op in ["app_data_retry", "app_data_give_up"] {
+            let mut finish = json!({"op": op, "token": token});
+            assert_eq!(answer(&s, &finish)["error"], "E44", "{op}");
+            finish["pin"] = json!("2468");
+            assert_eq!(answer(&s, &finish)["error"], "E47", "{op}");
+        }
         // Taking a drive over as it is, or a move: the unlock is enough.
         let take = json!({"op": "app_drive_use", "token": token, "disk": "ata-X_1", "serial": "1",
             "size_bytes": 9, "how": "take_over"});

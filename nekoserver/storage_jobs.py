@@ -768,8 +768,9 @@ def weekly_copy_drive(config):
 def beside_words(config, kinds):
     """What the move window says of a move that backs `kinds` up on their own drive."""
     names = ' and '.join(KIND_WORDS[k] for k in kinds)
+    they_are = 'it is' if kinds == ['music'] else 'they are'  # music is one thing
     said = (
-        f'Your {names} would then be backed up on the drive they are on. That backup protects you from a '
+        f'Your {names} would then be backed up on the drive {they_are} on. That backup protects you from a '
         'mistake (a file deleted or changed), not from losing that drive.'
     )
     if 'photos' in kinds:
@@ -1425,8 +1426,9 @@ def move(job):
     beside = beside_backups(job.config, kind, to)
     if beside and job.request.get('beside_ok') is not True:
         raise Stop(
-            beside_words(job.config, beside) + ' Tick that you understand in the move window to move them anyway. '
-            'Nothing was changed.'
+            beside_words(job.config, beside)
+            + f' Tick that you understand in the move window to move {"it" if kind == "music" else "them"} anyway. '
+            + 'Nothing was changed.'
         )
     staging = root_of(job.config, to) / NEW_COPY.format(kind=kind, id=job.id)
     new = paths(job.config, kind, to, staging)

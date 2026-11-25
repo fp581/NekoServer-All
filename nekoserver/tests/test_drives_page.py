@@ -42,8 +42,8 @@ class DrivesPageTests(unittest.TestCase):
                 ['pass', 'Finished after a restart', 'Moved.' + cut],
                 [
                     'warning',
-                    'Finished at the next start',
-                    'A change was cut off. It is finished or put back when the server starts again.',
+                    'Not finished yet',
+                    'A change was cut off. It is finished or put back at the next start, or now with Try again.',
                 ],
                 # A run that ended without saying how is never "working" for ever.
                 ['fail', 'Not done', 'It stopped before it had finished. Nothing else was changed.'],
@@ -118,6 +118,32 @@ class DrivesPageTests(unittest.TestCase):
         self.assertEqual(said[2], ['pass', 'Not known', None])
         # The weekly USB copy holds no music.
         self.assertIn('Music is not in the weekly USB copy', said[3][2])
+
+    def test_a_stuck_job_names_its_drives_and_which_is_away(self):
+        # T1-18: "Try again" once every drive it needs is there; "Give it up" when one
+        # is away (or the job names none).
+        needs = [
+            {'place': 'media', 'words': 'Media and backups drive', 'away': None},
+            {'place': 'd3', 'words': 'Extra drive d3', 'away': 'missing'},
+            {'place': 'd4', 'words': 'Extra drive d4', 'away': 'other'},
+        ]
+        said = page(('stuckNeeds', {'needs': needs}), ('stuckNeeds', None))
+        self.assertEqual(
+            said[0],
+            {
+                'lines': [
+                    'Media and backups drive: connected',
+                    'Extra drive d3: not connected',
+                    'Extra drive d4: another disk is in its place',
+                ],
+                'away': ['Extra drive d3', 'Extra drive d4'],
+                'named': True,
+            },
+        )
+        self.assertEqual(said[1], {'lines': [], 'away': [], 'named': False})
+        source = (ROOT / 'dashboard/app.js').read_text()
+        self.assertIn("'data-retry'", source)
+        self.assertIn("'data-give-up'", source)
 
     def test_a_move_beside_the_backups_needs_its_own_tick(self):
         said = page(

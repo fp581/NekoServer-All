@@ -101,6 +101,50 @@ def media_answer():
     return {'ok': True, 'working': False, 'result': {**result, 'kinds': [films, shows]}}
 
 
+def drives_snapshot():
+    """The snapshot with where the data is (collect.rs data_kinds): the photos backed up on
+    the drive they are on, and the music, on the Apps drive, movable onto the backups'
+    drive (which needs the move window's tick)."""
+    beside = (
+        'Your music would then be backed up on the drive it is on. That backup protects you from a mistake '
+        '(a file deleted or changed), not from losing that drive. Music is not in the weekly USB copy: losing '
+        'that drive loses your music and its backup.'
+    )
+    kinds = [
+        {
+            'kind': 'photos',
+            'words': 'Photos',
+            'place': 'media',
+            'place_words': 'Media and backups drive',
+            'bytes': 4e11,
+            'measured_at': time.time() - 600,
+            'old_copy': None,
+            'same_drive': True,
+            'targets': [{'to': 'ssd', 'words': 'Apps drive', 'ok': True, 'beside': [], 'beside_words': None}],
+        },
+        {
+            'kind': 'music',
+            'words': 'Music',
+            'place': 'ssd',
+            'place_words': 'Apps drive',
+            'bytes': 3e10,
+            'measured_at': time.time() - 600,
+            'old_copy': None,
+            'same_drive': False,
+            'targets': [
+                {
+                    'to': 'media',
+                    'words': 'Media and backups drive',
+                    'ok': True,
+                    'beside': ['music'],
+                    'beside_words': beside,
+                }
+            ],
+        },
+    ]
+    return {**snapshot(), 'data_kinds': kinds, 'storage_job': {'working': False, 'unfinished': False}}
+
+
 class StandInControl(threading.Thread):
     """The control service, signed in, answering the Media folders page; every request
     it was given is kept in `asked`."""
@@ -130,6 +174,8 @@ class StandInControl(threading.Thread):
         self.run_out = False
         # This device not signed in (the Media folders page then offers to unlock).
         self.signed_out = False
+        # The Drives page's job, as storage-state answers it (None: nothing at work).
+        self.storage_job = None
         self.server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         self.server.bind(str(path))
         self.server.listen(16)
@@ -151,6 +197,9 @@ class StandInControl(threading.Thread):
             return {'ok': False, 'error': 'E43', 'message': 'Enter your PIN to change this'}
         if op == 'app_media_state':
             return media_answer()
+        if op == 'app_storage_state':
+            job = self.storage_job or {'working': False, 'unfinished': False, 'result': None}
+            return {'ok': True, 'looked_at': time.time() - 60, 'look': {'at': time.time() - 60}, 'storage_job': job}
         if op == 'app_media_browse':
             return self.BROWSE.get(request.get('path') or '', {'ok': False, 'error': 'E42', 'message': 'No.'})
         return {'ok': True, 'id': 'abc', 'message': 'Working on it.'}
@@ -333,6 +382,114 @@ NEWER_BUILTINS = [
 
 
 @unittest.skipUnless(playwright_works(), 'no browser here (Node, Playwright, Chromium or a built runtime missing)')
+class DrivesInBrowserTests(unittest.TestCase):
+    """The Drives page, signed in (a stand-in control service answers it)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.folder = tempfile.TemporaryDirectory()
+        status = Path(cls.folder.name) / 'status.json'
+        status.write_text(json.dumps(drives_snapshot()))
+        cls.control = StandInControl(Path(cls.folder.name) / 'control.sock')
+        cls.control.start()
+        cls.server, cls.address = serve(status, Path(cls.folder.name) / 'control.sock')
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.terminate()
+        cls.server.wait(timeout=10)
+        cls.control.server.close()
+        cls.folder.cleanup()
+
+    browse = DashboardInBrowserTests.browse
+
+    def test_a_move_beside_the_backups_is_ticked_first_in_both_looks_at_phone_width(self):
+        # 1.0.1 (T4's bd05f7b, page by T3): the tick before "Move here", the card's
+        # "same drive as its backup", and the tick reaching the job (serve.rs dropped it).
+        for look in ('neko', 'professional'):
+            for width in (390, 320):
+                with self.subTest(look=look, width=width):
+                    self.control.asked.clear()
+                    (answer,) = self.browse(('drivesBeside', {'width': width, 'look': look}))
+                    self.assertEqual(answer['errors'], [])
+                    self.assertEqual(answer['wide'], [], 'nothing wider than the phone')
+                    photos, music = answer['cards']
+                    self.assertEqual(photos['badge'], 'Media and backups drive · same drive as its backup')
+                    self.assertIn(
+                        'Its backup is on the same drive: it protects against a mistake, not against losing '
+                        'that drive. Only the weekly copy on the USB drive is on another drive.',
+                        photos['hints'],
+                    )
+                    self.assertEqual(music['badge'], 'Apps drive')
+                    self.assertIn(
+                        'Your music would then be backed up on the drive it is on.', answer['before']['words']
+                    )
+                    self.assertEqual(answer['before']['tick'], 'I understand: the backup would be on the same drive.')
+                    self.assertIs(answer['before']['off'], True, '"Move here" waits for the tick')
+                    self.assertIs(answer['on'], True)
+                    sent = [r for r in self.control.asked if r.get('op') == 'app_data_move']
+                    self.assertEqual(len(sent), 1, self.control.asked)
+                    self.assertEqual(
+                        {k: sent[0].get(k) for k in ('kind', 'to', 'beside_ok')},
+                        {'kind': 'music', 'to': 'media', 'beside_ok': True},
+                    )
+
+
+STUCK_JOB = {
+    'working': False,
+    'unfinished': True,
+    'result': {
+        'state': 'failed',
+        'job': 'move',
+        'kind': 'photos',
+        'message': 'The job is finished when its drives are back. Extra drive d3 is not connected '
+        '(nothing is mounted at /mnt/nekoserver-drives/d3).',
+        'advice': 'It is finished at the next start, or now with "Try again" (once its drives are back), or '
+        '"Give it up": what is done stays, and the rest is said.',
+    },
+    'stuck': {
+        'job': 'move',
+        'kind': 'photos',
+        'committed': True,
+        'needs': [
+            {'place': 'media', 'words': 'Media and backups drive', 'away': None},
+            {'place': 'd3', 'words': 'Extra drive d3', 'away': 'missing'},
+        ],
+    },
+}
+
+
+class DrivesStuckInBrowserTests(DrivesInBrowserTests):
+    """The Drives page with a job a journal waits with, its drive away (T1-18)."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.control.storage_job = STUCK_JOB
+
+    def test_a_move_beside_the_backups_is_ticked_first_in_both_looks_at_phone_width(self):
+        """Not here: every button but this job's waits while it is stuck."""
+
+    def test_a_stuck_job_is_given_up_with_the_pin_in_both_looks_at_phone_width(self):
+        for look in ('neko', 'professional'):
+            for width in (390, 320):
+                with self.subTest(look=look, width=width):
+                    self.control.asked.clear()
+                    (answer,) = self.browse(('drivesStuck', {'width': width, 'look': look}))
+                    self.assertEqual(answer['errors'], [])
+                    shown = answer['shown']
+                    self.assertEqual(shown['title'], 'Not finished')
+                    self.assertEqual(
+                        shown['needs'], ['Media and backups drive: connected', 'Extra drive d3: not connected']
+                    )
+                    self.assertEqual(shown['buttons'], [['Try again', True], ['Give it up', False]])
+                    self.assertFalse(shown['wide'])
+                    self.assertEqual(answer['dialog'], {'typed': False, 'focused': 'drive-pin', 'wide': False})
+                    sent = [r for r in self.control.asked if r.get('op') == 'app_data_give_up']
+                    self.assertEqual(len(sent), 1, self.control.asked)
+                    self.assertEqual(sent[0].get('pin'), '2468')
+
+
 class OlderBrowserTests(unittest.TestCase):
     """The page in a browser that lacks the newest built-ins, signed in, with the assistant set up."""
 

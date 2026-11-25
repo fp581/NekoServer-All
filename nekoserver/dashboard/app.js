@@ -6348,8 +6348,8 @@ function driveOutcome(job) {
   if (j.unfinished) {
     return [
       'warning',
-      'Finished at the next start',
-      text(r.message, 'A change was cut off. It is finished or put back when the server starts again.')
+      'Not finished yet',
+      text(r.message, 'A change was cut off. It is finished or put back at the next start, or now with Try again.')
     ];
   }
   const cut = r.power_cut === true ? ' The power went off during it.' : '';
@@ -6478,7 +6478,8 @@ function eraseDialog(row, title, action, send) {
   );
 }
 /* A dialog that needs words typed and the PIN again before its button works. */
-function typedDialog(eyebrow, title, intro, wanted, action, send) {
+/* With `wanted` null only the PIN is asked (Try again, Give it up). */
+function typedDialog(eyebrow, title, intro, wanted, action, send, look = 'button danger') {
   const form = el('form', 'unlock drive-confirm');
   const typed = el('input'),
     pin = el('input');
@@ -6489,11 +6490,12 @@ function typedDialog(eyebrow, title, intro, wanted, action, send) {
     pinField = el('label', 'field', 'Your PIN');
   typedField.append(typed);
   pinField.append(pin);
-  const go = el('button', 'button danger', action);
+  const go = el('button', look, action);
   go.type = 'submit';
   go.disabled = true;
+  const asked = wanted !== null;
   const fit = () => {
-    go.disabled = !confirmMatches(typed.value, wanted) || !/^\d{4,8}$/.test(pin.value);
+    go.disabled = (asked && !confirmMatches(typed.value, wanted)) || !/^\d{4,8}$/.test(pin.value);
   };
   typed.addEventListener('input', fit);
   pin.addEventListener('input', fit);
@@ -6516,9 +6518,9 @@ function typedDialog(eyebrow, title, intro, wanted, action, send) {
   const cancel = button('Cancel', () => $('dialog').close(), 'button secondary');
   const actions = el('div', 'dialog-actions');
   actions.append(go, cancel);
-  form.append(typedField, pinField, actions);
+  form.append(...(asked ? [typedField] : []), pinField, actions);
   openDialog(eyebrow, title, [...intro, form, said]);
-  requestAnimationFrame(() => typed.focus());
+  requestAnimationFrame(() => (asked ? typed : pin).focus());
 }
 /* Sent from a dialog: its own refusal is said inside it, so only an accepted one is followed. */
 async function drivesSent(op, body, starting) {
@@ -6764,7 +6766,7 @@ function besideDialog(k, t) {
   const tick = el('input');
   tick.type = 'checkbox';
   tick.id = 'drive-beside-ack';
-  const label = el('label', 'field check', 'I understand: their backup would be on the same drive as them.');
+  const label = el('label', 'field check', 'I understand: the backup would be on the same drive.');
   label.prepend(tick);
   const go = button(
     'Move here',
@@ -6892,25 +6894,6 @@ function stuckActions(job) {
   const j = object(job);
   return j.unfinished === true && j.working !== true;
 }
-function stuckButtons() {
-  const actions = el('div', 'update-actions');
-  actions.append(
-    button('Try again', () => void drivesChange('data-retry', {}, 'Trying the change again…')),
-    button(
-      'Give it up',
-      () =>
-        confirmDialog(
-          'DRIVES',
-          'Give up this change?',
-          'What is done stays, and what is not is said. Work that needs a drive that is away is done once it is back.',
-          'Give it up',
-          () => void drivesChange('data-give-up', {}, 'Giving up the change…')
-        ),
-      'button small danger'
-    )
-  );
-  return actions;
-}
 function drivesOutcomeBox(job) {
   const said = driveOutcome(job);
   if (!said) {
@@ -6931,12 +6914,72 @@ function drivesOutcomeBox(job) {
     box.append(el('h4', '', 'What to do'), longText('', text(r.advice)));
   }
   if (stuckActions(job)) {
-    box.append(stuckButtons());
+    box.append(...stuckBox(job));
   }
   if (!job.working && numeric(r.finished_at) && r.finished_at > 0) {
     box.append(hint('Ended ' + ago(r.finished_at) + '.'));
   }
   return [box];
+}
+/* A job a journal waits with (T1-18): the drives it needs, "Try again" once they are all
+ * there, and "Give it up" when one is away (storage.rs `stuck`). */
+const AWAY_SAID = { missing: 'not connected', other: 'another disk is in its place' };
+function stuckNeeds(stuck) {
+  const needs = list(object(stuck).needs);
+  return {
+    lines: needs.map(
+      n => text(n.words, n.place) + ': ' + (n.away ? text(AWAY_SAID[n.away], 'not there') : 'connected')
+    ),
+    away: needs.filter(n => n.away).map(n => text(n.words, n.place)),
+    named: needs.length > 0
+  };
+}
+function stuckBox(job) {
+  const needs = stuckNeeds(job.stuck),
+    nodes = [];
+  if (needs.lines.length) {
+    const drives = el('ul', 'drive-needs');
+    drives.append(...needs.lines.map(line => el('li', '', line)));
+    nodes.push(el('h4', '', 'The drives it needs'), drives);
+  }
+  const actions = el('div', 'update-actions');
+  const again = button('Try again', () => finishStuck('data-retry'), 'button small');
+  again.disabled = needs.away.length > 0;
+  actions.append(again);
+  if (needs.away.length || !needs.named) {
+    actions.append(button('Give it up', () => finishStuck('data-give-up'), 'button small danger'));
+  }
+  nodes.push(actions);
+  if (needs.away.length) {
+    nodes.push(
+      hint(
+        'Plug ' +
+          needs.away.join(' and ') +
+          ' back in (the same drive), then press Try again. Lost for good? Give it up: what is done stays, and the rest is said.'
+      )
+    );
+  }
+  return nodes;
+}
+const FINISH = {
+  'data-retry': [
+    'Try again?',
+    'The change is finished now, as at a start: all apps pause for it and start again by themselves.',
+    'Try again',
+    'button',
+    'Trying again…'
+  ],
+  'data-give-up': [
+    'Give it up?',
+    'The change is finished without the drive that is away. Before its last step it is undone; after it, the settings stay as the change left them, and what needs that drive is done when it is back. Only for a drive that is lost for good.',
+    'Give it up',
+    'button danger',
+    'Giving it up…'
+  ]
+};
+function finishStuck(op) {
+  const [title, words, action, look, starting] = FINISH[op];
+  typedDialog('DRIVES', title, [el('p', '', words)], null, action, (_, pin) => drivesSent(op, { pin }, starting), look);
 }
 function drivesProgress(p) {
   if (numeric(p.bytes_total) && p.bytes_total > 0 && numeric(p.bytes_done)) {

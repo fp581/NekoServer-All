@@ -93,7 +93,7 @@
     "journal": "journal.json",
     "look": "look.json",
     "format": "neko-storage-v1",
-    "jobs": ["look", "use", "release", "move", "back", "delete_old", "mirror_add"],
+    "jobs": ["look", "use", "release", "move", "back", "delete_old", "mirror_add", "retry", "give_up"],
     "kinds": ["backups", "photos", "movies", "music", "cloud"],
     "_min_bytes": "The smallest disk the Drives page offers (the plan's \"below the minimum size\"): 8 GB, so the small test mirrors of the VM drills still qualify.",
     "min_bytes": 8000000000,
