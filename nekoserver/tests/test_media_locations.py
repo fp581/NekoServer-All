@@ -29,9 +29,8 @@ import media_locations  # noqa: E402
 import source_import  # noqa: E402
 
 # One stand-in for findmnt, mount, umount, systemctl and docker: what it is called as
-# decides what it does. State: {"mounts": {folder: [source, type, uuid (optional)]},
-# "bound": {point: source}, "busy": [points an app holds open]}; every call is noted in
-# calls.log.
+# decides what it does. State: {"mounts": {folder: [source, type]}, "bound": {point:
+# source}, "busy": [points an app holds open]}; every call is noted in calls.log.
 STAND_IN = r'''#!/usr/bin/env python3
 import json, os, re, sys
 state_path = os.environ['NEKO_STAND_IN']
@@ -58,7 +57,7 @@ if me == 'findmnt':
         point = path
     else:
         sys.exit(1)
-    said = {'TARGET': point, 'SOURCE': mounts[point][0], 'FSTYPE': mounts[point][1], 'UUID': (mounts[point] + [''])[2]}
+    said = {'TARGET': point, 'SOURCE': mounts[point][0], 'FSTYPE': mounts[point][1]}
     print(' '.join(said[c] for c in columns.split(',')))
 elif me == 'mount':
     point = args[-1]
@@ -983,7 +982,7 @@ class DriveFolderTests(unittest.TestCase):
         ):
             patch.start()
             self.addCleanup(patch.stop)
-        self.pc.state['mounts'][str(self.d4)] = ['/dev/sdd1', 'ext4', 'd4-uuid']
+        self.pc.state['mounts'][str(self.d4)] = ['/dev/sdd1', 'ext4']
         self.pc.save_state()
         with self.pc.fstab.open('a') as fstab:
             fstab.write(f'UUID=d4-uuid {self.d4} ext4 defaults,nofail 0 2\n')

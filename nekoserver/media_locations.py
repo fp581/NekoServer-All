@@ -326,7 +326,7 @@ def made_folder(config, drive, kind):
     return neko_common.drive_folder(config, drive) / MADE_IN / kind
 
 
-def extra_drive_mounted(config, drive):
+def drive_there(config, drive):
     """The Extra drive is one of NekoServer's own drives (not a NAS's shared folder) and
     is mounted now."""
     record = extra_drives(config).get(drive)
@@ -344,7 +344,7 @@ def drives_offered(config, kind):
     return [
         {'drive': drive, 'words': f'Extra drive {drive}', 'path': str(made_folder(config, drive, kind))}
         for drive in sorted(extra_drives(config))
-        if drive not in taken and extra_drive_mounted(config, drive)
+        if drive not in taken and drive_there(config, drive)
     ]
 
 
@@ -630,7 +630,7 @@ def make_refusal(config, asked):
         raise Refusal(NO_DOWNLOADS.format(words=words))
     if drive not in extra_drives(config):
         raise Refusal(NOT_EXTRA.format(drive=drive))
-    if not extra_drive_mounted(config, drive):
+    if not drive_there(config, drive):
         raise Refusal(DRIVE_AWAY.format(drive=drive))
     path = made_folder(config, drive, kind)
     if any(entry['path'] == str(path) for entry in entries_of(config, kind).values()):
