@@ -1139,6 +1139,20 @@ class DriveFolderTests(unittest.TestCase):
         theirs = self.make('music', downloads=False)
         self.assertIn(f'Your music in {made} is connected, used where it is.', theirs['message'])
 
+    def test_a_folder_on_d4_with_another_disk_in_its_place_is_refused(self):
+        # T1-18 (review of cb25447): drive_away's "other" covered for part C too.
+        answer = self.make('music', downloads=True)
+        self.assertEqual(answer['state'], 'done', answer)
+        made = self.d4 / 'media' / 'music'
+        self.pc.ask(change='remove', kind='music', slot='music', path=str(made))
+        before = self.pc.settings()
+        self.pc.state['mounts'][str(self.d4)] = ['/dev/sde1', 'ext4', 'another-uuid']
+        self.pc.save_state()
+        other = self.make('music', downloads=False)
+        self.assertEqual(other['state'], 'refused', other)
+        self.assertIn(f'{made} is on Extra drive d4, which is not connected now', other['message'])
+        self.assertEqual(self.pc.settings(), before)
+
     def test_a_drive_that_is_not_an_extra_drive_or_not_there_is_refused_and_nothing_is_made(self):
         before = self.pc.settings()
         for drive in ('d9', 'media'):
