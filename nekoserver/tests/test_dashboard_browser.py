@@ -30,6 +30,11 @@ def playwright_works():
         return False
 
 
+# Asked once: each ask starts Chromium, and one that timed out on a busy machine skipped a
+# whole class (which CI's run.sh counts as a failure).
+BROWSER_WORKS = playwright_works()
+
+
 def snapshot():
     """A server with ten apps, two drives (one nearly full, with a SMART warning) and an
     app update waiting: enough for every page to have its cards and buttons."""
@@ -234,7 +239,7 @@ def serve(status_file, control):
     return server, f'http://127.0.0.1:{port}/'
 
 
-@unittest.skipUnless(playwright_works(), 'no browser here (Node, Playwright, Chromium or a built runtime missing)')
+@unittest.skipUnless(BROWSER_WORKS, 'no browser here (Node, Playwright, Chromium or a built runtime missing)')
 class DashboardInBrowserTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -316,7 +321,7 @@ class DashboardInBrowserTests(unittest.TestCase):
                     self.assertFalse(overlap, "the title of the page is under its buttons")
 
 
-@unittest.skipUnless(playwright_works(), 'no browser here (Node, Playwright, Chromium or a built runtime missing)')
+@unittest.skipUnless(BROWSER_WORKS, 'no browser here (Node, Playwright, Chromium or a built runtime missing)')
 class MediaFoldersInBrowserTests(unittest.TestCase):
     """The Media folders page, signed in (a stand-in control service answers it)."""
 
@@ -381,7 +386,7 @@ NEWER_BUILTINS = [
 ]
 
 
-@unittest.skipUnless(playwright_works(), 'no browser here (Node, Playwright, Chromium or a built runtime missing)')
+@unittest.skipUnless(BROWSER_WORKS, 'no browser here (Node, Playwright, Chromium or a built runtime missing)')
 class DrivesInBrowserTests(unittest.TestCase):
     """The Drives page, signed in (a stand-in control service answers it)."""
 
@@ -459,7 +464,7 @@ STUCK_JOB = {
 }
 
 
-@unittest.skipUnless(playwright_works(), 'no browser here (Node, Playwright, Chromium or a built runtime missing)')
+@unittest.skipUnless(BROWSER_WORKS, 'no browser here (Node, Playwright, Chromium or a built runtime missing)')
 class DrivesStuckInBrowserTests(DrivesInBrowserTests):
     """The Drives page with a job a journal waits with, its drive away (T1-18)."""
 
@@ -491,7 +496,7 @@ class DrivesStuckInBrowserTests(DrivesInBrowserTests):
                     self.assertEqual(sent[0].get('pin'), '2468')
 
 
-@unittest.skipUnless(playwright_works(), 'no browser here (Node, Playwright, Chromium or a built runtime missing)')
+@unittest.skipUnless(BROWSER_WORKS, 'no browser here (Node, Playwright, Chromium or a built runtime missing)')
 class OlderBrowserTests(unittest.TestCase):
     """The page in a browser that lacks the newest built-ins, signed in, with the assistant set up."""
 
@@ -539,7 +544,7 @@ class OlderBrowserTests(unittest.TestCase):
         self.assertEqual(errors, {route: [] for route in routes})
 
 
-@unittest.skipUnless(playwright_works(), 'no browser here (Node, Playwright, Chromium or a built runtime missing)')
+@unittest.skipUnless(BROWSER_WORKS, 'no browser here (Node, Playwright, Chromium or a built runtime missing)')
 class PinInBrowserTests(unittest.TestCase):
     """When the page asks for the PIN, signed in (a stand-in control service answers)."""
 

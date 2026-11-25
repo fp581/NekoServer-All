@@ -118,9 +118,8 @@ const CHECKS = {
           n => n.getClientRects().length && n.getBoundingClientRect().right > edge
         );
         return out
-          .filter(n => !out.some(o => o !== n && n.contains(o)))
           .map(n => n.tagName.toLowerCase() + (n.className ? '.' + String(n.className).split(' ').join('.') : ''))
-          .slice(0, 6);
+          .slice(-6);
       });
     const cards = await page.evaluate(() =>
       [...document.querySelectorAll('.drive-kind')].map(c => ({
