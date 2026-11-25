@@ -361,7 +361,6 @@ impl Storage {
     }
 }
 
-/// One of this page's ops (the web server passes their fields on).
 /// A cut-off job, as the page shows it: the job, its kind, whether it is past its commit
 /// point, and the drives it needs, each with why it is away (null when it is there), as
 /// storage_jobs.py cut_places and neko_common.drive_away say it.
@@ -427,6 +426,7 @@ fn place_holding(cfg: &Value, path: &Path) -> Option<String> {
         .map(|(place, _)| place.to_string())
 }
 
+/// One of this page's ops (the web server passes their fields on).
 pub fn is_op(op: &str) -> bool {
     op == "app_storage_state" || job_of(op).is_some()
 }

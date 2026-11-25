@@ -7038,7 +7038,7 @@ function stuckBox(job) {
   again.disabled = needs.away.length > 0;
   actions.append(again);
   if (needs.away.length || !needs.named) {
-    actions.append(button('Give it up', () => finishStuck('data-give-up'), 'button small danger'));
+    actions.append(button('Give it up', () => finishStuck('data-give-up', needs.named), 'button small danger'));
   }
   nodes.push(actions);
   if (needs.away.length) {
@@ -7068,8 +7068,15 @@ const FINISH = {
     'Giving it up…'
   ]
 };
-function finishStuck(op) {
-  const [title, words, action, look, starting] = FINISH[op];
+/* Give it up for a job that names no drive (a mirror added, a drive used or let go): nothing
+ * is away, so the words are not about a lost drive. */
+const LET_GO = 'The change is let go: what is done stays, and the result says what is left.';
+function stuckWords(op, named) {
+  return op === 'data-give-up' && !named ? LET_GO : FINISH[op][1];
+}
+function finishStuck(op, named = true) {
+  const [title, , action, look, starting] = FINISH[op],
+    words = stuckWords(op, named);
   typedDialog('DRIVES', title, [el('p', '', words)], null, action, (_, pin) => drivesSent(op, { pin }, starting), look);
 }
 function drivesProgress(p) {

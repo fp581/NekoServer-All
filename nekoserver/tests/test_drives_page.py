@@ -163,6 +163,15 @@ class DrivesPageTests(unittest.TestCase):
             },
         )
         self.assertEqual(said[1], {'lines': [], 'away': [], 'named': False})
+        # Give it up for a job that names no drive is not about a lost drive (T5).
+        lost, let_go, again = page(
+            ('stuckWords', ['data-give-up', True]),
+            ('stuckWords', ['data-give-up', False]),
+            ('stuckWords', ['data-retry', False]),
+        )
+        self.assertIn('Only for a drive that is lost for good.', lost)
+        self.assertEqual(let_go, 'The change is let go: what is done stays, and the result says what is left.')
+        self.assertTrue(again.startswith('The change is finished now'), again)
         source = (ROOT / 'dashboard/app.js').read_text()
         self.assertIn("'data-retry'", source)
         self.assertIn("'data-give-up'", source)

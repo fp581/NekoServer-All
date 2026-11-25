@@ -65,6 +65,7 @@ const CALLS = new Set([
   'besideTick',
   'stuckActions',
   'stuckNeeds',
+  'stuckWords',
   'drivesReach',
   'isOrAre'
 ]);
@@ -196,6 +197,7 @@ function inTurn(items, step) {
 const summary = issue => ({ id: issue.id, level: issue.level, title: issue.title });
 const SPECIAL = {
   collectIssues: argument => app.collectIssues(app.validStatus(argument)).map(summary),
+  stuckWords: ([op, named]) => app.stuckWords(op, named),
   // The same list with what each item says and which guide it opens.
   issueDetails: argument =>
     app.collectIssues(app.validStatus(argument)).map(i => ({ ...summary(i), detail: i.detail, guide: i.guide })),
