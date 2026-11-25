@@ -36,7 +36,9 @@ from pathlib import Path
 import account_store
 import existing_media
 import existing_page
+import neko_common
 from neko_common import (
+    DRIVE_NAME,
     SETTINGS_HELP,
     SETUP_LOCK,
     OPERATION_LOCK,
@@ -46,7 +48,10 @@ from neko_common import (
     atomic_write,
     checked_settings,
     default_settings,
+    ensure_directory,
+    extra_drives,
     files_root,
+    findmnt,
     held_lock_reason,
     media_group,
     media_services,
@@ -118,6 +123,15 @@ HALF_SAVED = (
     'The settings could not be saved ({why}), and {paths} could not be put back as it was: it has the new '
     'choice. Run setup again to make the folders match it.'
 )
+# "A folder on this Extra drive" (1.0.1, part C): <drive>/media/<kind>, made by NekoServer.
+MADE_IN = 'media'
+NOT_EXTRA = '{drive} is not an Extra drive of this server. Reload the page and try again.'
+DRIVE_AWAY = (
+    'Extra drive {drive} is not connected now, so no folder was made on it. Connect it (the Drives page shows it), '
+    'then try again.'
+)
+NOT_MADE = '{path} is not a folder NekoServer can make (a file or a link is in its place). Nothing was changed.'
+MADE = 'A folder for your {words} on Extra drive {drive} is ready: {path}.'
 ONLY_SSD = 'The settings copy on the SSD was saved; {path} was not there to save in, so setup there has the old choice.'
 
 
@@ -162,6 +176,23 @@ def checked_request(raw):
         return checked_add(raw, asked)
     if change in ('remove', 'target'):
         return checked_slot_change(raw, asked)
+    if change == 'make':
+        return checked_make(raw, asked)
+    return asked
+
+
+def checked_make(raw, asked):
+    """checked_request for a folder made on an Extra drive: the drive (by its name), where
+    new downloads go, and for music whether the music backup copies it."""
+    if not isinstance(raw.get('drive'), str) or not DRIVE_NAME.fullmatch(raw['drive']):
+        raise Refusal('Which Extra drive? Reload the page and try again.')
+    if type(raw.get('downloads')) is not bool:
+        raise Refusal('Should new downloads go there? Reload the page and try again.')
+    asked.update(drive=raw['drive'], downloads=raw['downloads'])
+    if 'backup' in raw and type(raw['backup']) is not bool:
+        raise Refusal('Should the music backup copy it too? Reload the page and try again.')
+    if 'backup' in raw and asked['kind'] == 'music':
+        asked['backup'] = raw['backup']
     return asked
 
 
@@ -240,8 +271,10 @@ def kind_state(config, kind, rows):
     folders waiting to be copied."""
     mine = [row for row in rows if row['holds'] == kind]
     target = next((row for row in mine if row['new_files']), None)
-    # The music backup's answer for each folder (None: never asked, not on a NAS).
-    backup = {e['slot']: e.get('backup') for e in existing_media.extras(config) if e['holds'] == kind}
+    # The music backup's answer for each folder (None: never asked, not on a NAS or an
+    # Extra drive), and the Extra drive of a folder NekoServer made there.
+    saved = {e['slot']: e for e in existing_media.extras(config) if e['holds'] == kind}
+    backup = {slot: e.get('backup') for slot, e in saved.items()}
     downloads = existing_page.downloads(config, kind)
     # Where new downloads go: one of the person's folders, or the library (None: no downloads).
     new_go_to = None
@@ -268,9 +301,12 @@ def kind_state(config, kind, rows):
                 'reason': row['reason'],
                 'backup': backup.get(row['slot']),
                 'backup_said': existing_page.BACKED_UP.get(backup.get(row['slot'])),
+                'made': (saved.get(row['slot']) or {}).get('made'),
             }
             for row in mine
         ],
+        # The Extra drives a folder for this kind can be made on now (MADE_IN).
+        'drives': drives_offered(config, kind),
         'copies': copies,
         # How many more folders may be connected, and what is said when there is no room.
         'room': max(0, existing_media.FOLDERS_PER_KIND - len(mine)),
@@ -278,6 +314,33 @@ def kind_state(config, kind, rows):
         # Asked on the page as setup asks it, for music on a NAS used where it is.
         'backup_question': existing_page.backup_question() if kind == 'music' else None,
     }
+
+
+def made_folder(config, drive, kind):
+    """Where NekoServer makes the folder for `kind` on an Extra drive."""
+    return neko_common.drive_folder(config, drive) / MADE_IN / kind
+
+
+def drive_there(config, drive):
+    """The Extra drive is one of NekoServer's own drives (not a NAS's shared folder) and
+    is mounted now."""
+    record = extra_drives(config).get(drive)
+    network = record.get('network') if isinstance(record, dict) else None
+    if record is None or (isinstance(network, dict) and network.get('export')):
+        return False
+    top = neko_common.drive_folder(config, drive)
+    return findmnt('TARGET', top) == str(top)
+
+
+def drives_offered(config, kind):
+    """[{'drive', 'words', 'path'}]: the Extra drives connected now that have no folder of
+    this kind made on them yet."""
+    taken = {e.get('made') for e in existing_media.extras(config) if e['holds'] == kind}
+    return [
+        {'drive': drive, 'words': f'Extra drive {drive}', 'path': str(made_folder(config, drive, kind))}
+        for drive in sorted(extra_drives(config))
+        if drive not in taken and drive_there(config, drive)
+    ]
 
 
 def page_state(config, available=None):
@@ -311,9 +374,11 @@ def answered(config, kind):
 
 
 def kept_flags(entry, old):
-    """A remade entry keeps what was chosen for it before (the music backup's answer)."""
-    if old and 'backup' in old:
-        entry['backup'] = old['backup']
+    """A remade entry keeps what was chosen for it before (the music backup's answer, the
+    Extra drive NekoServer made it on)."""
+    for key in ('backup', 'made'):
+        if old and key in old:
+            entry[key] = old[key]
     return entry
 
 
@@ -393,8 +458,20 @@ def folder_that_can_be_added(config, kind, asked):
         raise Refusal(str(refused)) from None
 
 
-def add(config, asked, out):
-    """Connect a folder (or have it copied). Returns the kinds whose apps are to be told."""
+def made_and_backed_up(entry, found, asked, made, out):
+    """The entry of a folder made on an Extra drive names it (`made`), and music asked
+    about the backup has the answer: as setup does, only music on a NAS (or in a folder
+    made on an Extra drive, part C) is asked; yes unless the answer was no."""
+    if made:
+        entry['made'] = made
+    if entry['holds'] == 'music' and (made or existing_page.on_network_share(found)):
+        entry['backup'] = asked.get('backup', True)
+        out['notes'].append(f'Your {WORDS["music"]}: {existing_page.BACKED_UP[entry["backup"]]}')
+
+
+def add(config, asked, out, made=None):
+    """Connect a folder (or have it copied). Returns the kinds whose apps are to be told.
+    `made`: the Extra drive NekoServer made the folder on (make), saved with it."""
     kind, words = asked['kind'], WORDS[asked['kind']]
     if not media_group(config, GROUP[kind]):
         raise Refusal(NOT_ON.format(words=words))
@@ -412,10 +489,7 @@ def add(config, asked, out):
     elif asked['downloads']:
         out['notes'].append(answer['note'])
     entry = existing_media.entry_for(kind, found, new_files=bool(answer.get('ok')))
-    if kind == 'music' and existing_page.on_network_share(found):
-        # As setup does: only music on a NAS is asked about; yes unless the answer was no.
-        entry['backup'] = asked.get('backup', True)
-        out['notes'].append(f'Your {words}: {existing_page.BACKED_UP[entry["backup"]]}')
+    made_and_backed_up(entry, found, asked, made, out)
     staying = existing_media.download_only(config, kind) if entry['new_files'] else None
     before = existing_media.new_files_folder(config, kind)
     config['placement'] = existing_media.with_choice(config, entry)['placement']
@@ -512,7 +586,40 @@ def target(config, asked, out):
     return [kind]
 
 
-DO = {'add': add, 'remove': remove, 'target': target}
+def make(config, asked, out):
+    """ "A folder on this Extra drive": <drive>/media/<kind> made for the apps (the folder
+    above it root's, 0755; the kind's the apps' account's, 2775, as the library's), then
+    connected as a folder used where it is, saved as NekoServer's folder on that drive.
+    One made before (then taken away) is used as it is."""
+    kind, words, drive = asked['kind'], WORDS[asked['kind']], asked['drive']
+    if not media_group(config, GROUP[kind]):
+        raise Refusal(NOT_ON.format(words=words))
+    if asked['downloads'] and not existing_page.downloads(config, kind):
+        raise Refusal(NO_DOWNLOADS.format(words=words))
+    if drive not in extra_drives(config):
+        raise Refusal(NOT_EXTRA.format(drive=drive))
+    if not drive_there(config, drive):
+        raise Refusal(DRIVE_AWAY.format(drive=drive))
+    path = made_folder(config, drive, kind)
+    if any(entry['path'] == str(path) for entry in entries_of(config, kind).values()):
+        raise Refusal(ALREADY.format(path=path, words=words))
+    if existing_media.is_full(config, kind):
+        raise Refusal(existing_media.full_words(kind))
+    for folder in (path.parent, path):
+        if os.path.islink(folder) or (os.path.lexists(folder) and not os.path.isdir(folder)):
+            raise Refusal(NOT_MADE.format(path=folder))
+    uid, gid = existing_media.app_user(config)
+    ensure_directory(path.parent, 0o755)
+    ensure_directory(path, 0o2775, uid, gid)
+    kinds = add(config, {**asked, 'path': str(path), 'how': 'in_place'}, out, made=drive)
+    saved = entries_of(config, kind)
+    out['message'] = MADE.format(words=words, drive=drive, path=path)
+    if any(e['new_files'] and e['path'] == str(path) for e in saved.values()):
+        out['message'] += f' New {words} are saved there from now on.'
+    return kinds
+
+
+DO = {'add': add, 'remove': remove, 'target': target, 'make': make}
 
 
 # ---- telling the apps ----------------------------------------------------------------------

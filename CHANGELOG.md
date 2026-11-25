@@ -4,6 +4,12 @@
 
 Storage from the dashboard: add a drive, move data to it, extra folders per app on more drives, and a button to rebuild a mirror.
 
+### Added
+- **A folder for films, shows or music on an Extra drive** (part C). The Media folders page offers **A new folder on an Extra drive** for each kind while one is connected, and each Extra drive's card on the Drives page has **Use for films, shows or music**, which opens it. NekoServer makes `<drive>/media/<kind>` for the apps and connects it as a folder used where it is (new downloads there if ticked); nothing else on the drive changes. It is kept as NekoServer's folder on that drive, so **Stop using this drive** waits until it is taken away. Music there gets the question asked for music on a NAS, **Back this up too?**, with the same default (yes).
+
+### Fixed
+- **A folder of yours on an Extra drive can be connected** (T1-15). Media folders refused it with "The apps' account (1000:1000) cannot read ... give the account access yourself", though the folder was the apps' own: NekoServer's own `/mnt/nekoserver-drives`, the folder of the drives' mount points, had been made 0700 by setup run inside a Drives job. Setup's storage step now keeps it root's, 0755 (as /mnt), and opens a closed one, saying so once; each drive's own top and your folders are left as they are, and a folder of yours the apps cannot read is still said in your words.
+
 ## v1.0.0 — 2026-11-24
 
 The first stable release, built on 0.52.3.
