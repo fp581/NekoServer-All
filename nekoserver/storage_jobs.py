@@ -2249,12 +2249,26 @@ def give_up(job, stuck):
             words = 'The job was given up. The old copy is deleted when its drive is back.'
         elif cut.action == 'use' and undo.get('drive'):
             words = give_up_drive(cut, undo['drive'])
+        elif cut.action == 'mirror_add':
+            words = mirror_given_up(undo)
         else:
             cut.reapply(stuck)
             words = 'The job was given up. Run setup again (sudo bash install.sh) so every app is as the settings say.'
         cut.result('failed', words)
         cut.done()
     return 1
+
+
+def mirror_given_up(undo):
+    """The words for a mirror's rebuild let go (T5, review of 6940d3f: its pool may never
+    come back, and setup does not rebuild a mirror): the recovery page's row for it."""
+    row = 'A drive of a Btrfs pool failed'
+    if str(undo.get('array') or '').startswith('md-'):
+        row = 'A drive of a RAID array failed'
+    return (
+        'The job was given up: the new drive was not made part of the mirror, which goes on '
+        f'with the drives it has. To replace the failed drive, see RECOVERY.md, "{row}".'
+    )
 
 
 def give_up_drive(job, drive):

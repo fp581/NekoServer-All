@@ -136,5 +136,42 @@ class MirrorTests(Jobs):
                 storage_jobs.mirror_context(job)
 
 
+def mirror_journal(root, array):
+    storage_jobs.write_state(
+        'journal.json',
+        {
+            'id': ID,
+            'job': 'mirror_add',
+            'phase': 'rebuild',
+            'committed': True,
+            'boot': 'before',
+            'started_at': 1.0,
+            'request': {'format': storage_jobs.FORMAT, 'id': ID, 'job': 'mirror_add'},
+            'undo': {'array': array, 'member': '/dev/sdc1', 'runs': 3},
+        },
+        Path(root) / 'state',
+    )
+
+
+class MirrorGiveUpTests(Jobs):
+    """T5, review of T2's 6940d3f: a cut-off rebuild whose pool never comes back has only
+    "Give it up"; it is taken (cut_places has no drive for it) and says where to go on."""
+
+    def test_a_btrfs_rebuild_given_up_points_to_the_recovery_page(self):
+        mirror_journal(self.root, 'btrfs-0123abcd-4567')
+        self.assertEqual(self.run_job('give_up'), 1)
+        self.assertIsNone(saved_journal(self.root))
+        said = last_result(self.root)['message']
+        self.assertIn('RECOVERY.md', said)
+        self.assertIn('A drive of a Btrfs pool failed', said)
+        self.assertNotIn('Run setup again', said)
+
+    def test_an_md_rebuild_given_up_points_to_the_raid_row(self):
+        mirror_journal(self.root, 'md-md0')
+        self.assertEqual(self.run_job('give_up'), 1)
+        self.assertIsNone(saved_journal(self.root))
+        self.assertIn('A drive of a RAID array failed', last_result(self.root)['message'])
+
+
 if __name__ == '__main__':
     unittest.main()
