@@ -6583,7 +6583,9 @@ function typedDialog(eyebrow, title, intro, wanted, action, send, look = 'button
   actions.append(go, cancel);
   form.append(...(asked ? [typedField] : []), pinField, actions);
   openDialog(eyebrow, title, [...intro, form, said]);
-  requestAnimationFrame(() => (asked ? typed : pin).focus());
+  // Now, not a frame later: showModal has put the focus on the close button, and a confirm
+  // read (or typed into) before the next frame would find it there (GitHub CI, 1.0.1).
+  (asked ? typed : pin).focus();
 }
 /* Sent from a dialog: its own refusal is said inside it, so only an accepted one is followed. */
 async function drivesSent(op, body, starting) {
