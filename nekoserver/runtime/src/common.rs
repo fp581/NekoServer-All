@@ -506,8 +506,6 @@ pub fn same_folder(a: &Path, b: &Path) -> bool {
         _ => false,
     }
 }
-/// The extra drives something is placed on: an app's files ("locations"), or its
-/// settings and database ("installed", 0.50.0). The ones every job checks.
 /// The kinds ("movies", "music": rows of the placement table) that have a folder the Media
 /// folders page made on drive `name` (part C: <name>/media/<kind>, saved with "made").
 pub fn made_on(cfg: &serde_json::Value, name: &str) -> Vec<String> {
@@ -544,6 +542,8 @@ pub fn drives_watched(cfg: &serde_json::Value) -> Vec<String> {
     }
     found
 }
+/// The extra drives something is placed on: an app's files ("locations"), or its
+/// settings and database ("installed", 0.50.0). The ones every job checks.
 pub fn drives_in_use(cfg: &serde_json::Value) -> Vec<String> {
     let mut found: Vec<String> = cfg["locations"]
         .as_object()
