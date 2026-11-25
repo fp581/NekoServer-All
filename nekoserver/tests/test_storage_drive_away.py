@@ -464,10 +464,10 @@ class MediaFoldersTests(Jobs):
 
         folder = self.root / 'drives/d3/media/movies'
         folder.mkdir(parents=True)
-        media_locations.drive_there(self.config, str(folder))  # there: no refusal
+        media_locations.folder_drive_there(self.config, str(folder))  # there: no refusal
         self.unplug('d3')
         with self.assertRaises(media_locations.Refusal) as refused:
-            media_locations.drive_there(self.config, str(folder))
+            media_locations.folder_drive_there(self.config, str(folder))
         self.assertIn('Extra drive d3, which is not connected', str(refused.exception))
 
 
