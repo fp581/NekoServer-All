@@ -213,14 +213,15 @@ def missing_drives(config, by_uuid=BY_UUID):
 
 def missing_group_drives(config, by_uuid=BY_UUID):
     """{drive: what it holds, in words} for the drives of a group's own (a group's files or
-    apps placed on them, 0.50.0) that are not connected now. A folder a NAS shares is not
-    one: its NAS may only be off."""
+    apps placed on them, 0.50.0) that are not connected now, and for those holding only a
+    folder the Media folders page made (the drives setup's drive check watches). A folder
+    a NAS shares is not one: its NAS may only be off."""
     try:
         import placement
-        from neko_common import drives_in_use, extra_drives
+        from neko_common import drives_watched, extra_drives
 
         found = {}
-        for name in drives_in_use(config):
+        for name in drives_watched(config):
             record = extra_drives(config)[name]
             uuid = str(record.get('uuid', ''))
             network = record.get('network') if isinstance(record.get('network'), dict) else {}
@@ -235,10 +236,25 @@ def missing_group_drives(config, by_uuid=BY_UUID):
                     if drive == name
                 }
             )
-            found[name] = ' and '.join(placement.name_of(row) for row in rows)
+            made = sorted(set(made_rows(config, name)) - set(rows))
+            words = [placement.name_of(row) for row in rows]
+            words += [f'{placement.name_of(row)}: a folder the Media folders page made' for row in made]
+            found[name] = ' and '.join(words)
         return found
     except (RuntimeError, KeyError, TypeError, ValueError, StopIteration):
         return {}
+
+
+def made_rows(config, name):
+    """The rows of the placement table (movies, music) with a folder the Media folders page
+    made on drive `name`."""
+    saved = config.get('placement') if isinstance(config.get('placement'), dict) else {}
+    return [
+        row
+        for row, entry in saved.items()
+        if isinstance(entry, dict)
+        and any(isinstance(e, dict) and e.get('made') == name for e in entry.get('extra') or [])
+    ]
 
 
 def planned_steps(config, states, root):
