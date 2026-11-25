@@ -592,8 +592,8 @@ def kind_folders(kind):
 
 def inner_names(kind, rel):
     """The names in a kind's folder `rel` that are another kind's folders (T1-20: the films'
-    library/downloads holds the music's library/downloads/music, which qBittorrent needs on
-    the music's drive): never copied, compared, retired or moved with it, and never in the
+    downloads folder holds the music's downloads folder, which qBittorrent needs on the
+    music's drive): never copied, compared, retired or moved with it, and never in the
     way of it."""
     names = set()
     for other in KINDS:
