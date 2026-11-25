@@ -61,11 +61,13 @@ const CALLS = new Set([
   'diskLine',
   'confirmMatches',
   'moveWords',
-  'drivesReach',
-  'isOrAre',
   'kindPlace',
   'besideTick',
-  'stuckActions'
+  'stuckActions',
+  'stuckNeeds',
+  'stuckWords',
+  'drivesReach',
+  'isOrAre'
 ]);
 /* Calls answered from another function's result, with more of it; the ask* and media*
    ones run a piece of the page on a page that keeps what is put on it (ASK_PAGE below). */
@@ -195,6 +197,7 @@ function inTurn(items, step) {
 const summary = issue => ({ id: issue.id, level: issue.level, title: issue.title });
 const SPECIAL = {
   collectIssues: argument => app.collectIssues(app.validStatus(argument)).map(summary),
+  stuckWords: ([op, named]) => app.stuckWords(op, named),
   // The same list with what each item says and which guide it opens.
   issueDetails: argument =>
     app.collectIssues(app.validStatus(argument)).map(i => ({ ...summary(i), detail: i.detail, guide: i.guide })),

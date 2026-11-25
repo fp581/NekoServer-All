@@ -14,7 +14,7 @@ use serde_json::{json, Value};
 use std::{
     fs,
     os::unix::fs::PermissionsExt,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -62,7 +62,7 @@ fn job_of(op: &str) -> Option<&'static str> {
 pub fn needs_pin(op: &str, request: &Value) -> bool {
     match op {
         "app_drive_use" => request["how"] != "take_over",
-        "app_data_delete_old" | "app_mirror_add" => true,
+        "app_data_delete_old" | "app_mirror_add" | "app_data_retry" | "app_data_give_up" => true,
         _ => false,
     }
 }
@@ -292,13 +292,28 @@ impl Storage {
         })
     }
     /// `storage-state`: the last look and the job.
-    pub fn state(&self) -> Value {
+    pub fn state(&self, cfg: &Value) -> Value {
         let _one = self
             .one
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let look = self.look();
-        json!({"ok": true, "looked_at": look["at"], "look": look, "storage_job": self.job()})
+        json!({"ok": true, "looked_at": look["at"], "look": look, "storage_job": self.job_with(cfg)})
+    }
+    /// The job as /api/status gives it, with `stuck`.
+    pub fn job_with(&self, cfg: &Value) -> Value {
+        let mut job = self.job();
+        job["stuck"] = self.stuck(cfg);
+        job
+    }
+    /// `stuck`: the job a journal waits with, and the drives it needs (null without one).
+    pub fn stuck(&self, cfg: &Value) -> Value {
+        if !self.unfinished() {
+            return Value::Null;
+        }
+        let journal = self.read("journal", 1_000_000);
+        let table = fs::read_to_string("/proc/self/mountinfo").unwrap_or_default();
+        stuck_in(cfg, &journal, &table, Path::new("/dev/disk/by-uuid"))
     }
 
     /// A job from the page: checked, written for storage_jobs.py, and its service started.
@@ -346,14 +361,79 @@ impl Storage {
     }
 }
 
+/// A cut-off job, as the page shows it: the job, its kind, whether it is past its commit
+/// point, and the drives it needs, each with why it is away (null when it is there), as
+/// storage_jobs.py cut_places and neko_common.drive_away say it.
+pub(crate) fn stuck_in(cfg: &Value, journal: &Value, table: &str, by_uuid: &Path) -> Value {
+    let undo = &journal["undo"];
+    let named = |key: &str| undo[key].as_str().map(str::to_string);
+    let needs: Vec<String> = match journal["job"].as_str() {
+        Some("delete_old") => named("deleting")
+            .and_then(|d| place_holding(cfg, Path::new(&d).parent()?))
+            .into_iter()
+            .collect(),
+        Some("move" | "back") if undo["here_away"] == true => named("to").into_iter().collect(),
+        Some("move" | "back") => [named("here"), named("to")].into_iter().flatten().collect(),
+        _ => Vec::new(),
+    };
+    let needs: Vec<Value> = needs
+        .iter()
+        .map(|place| {
+            json!({"place": place, "words": crate::drives::drive_words(place),
+                "away": away_in(cfg, place, table, by_uuid)})
+        })
+        .collect();
+    json!({"job": journal["job"], "kind": journal["request"]["kind"],
+        "committed": journal["committed"] == true, "needs": needs})
+}
+/// Why the drive `place` is away: "missing" (nothing mounted at its folder, or no such
+/// drive), "other" (another filesystem there), None when it is there.
+fn away_in(cfg: &Value, place: &str, table: &str, by_uuid: &Path) -> Option<&'static str> {
+    let Some(root) = common::drive_folder(cfg, place) else {
+        return Some("missing");
+    };
+    let key = match place {
+        "ssd" => "data_ssd",
+        "media" => "media_hdd",
+        name => name,
+    };
+    let Some(uuid) = cfg["storage"][key]["uuid"]
+        .as_str()
+        .filter(|u| !u.is_empty())
+    else {
+        // A layout that names no filesystem for it needs its folder.
+        return (!root.is_dir()).then_some("missing");
+    };
+    let Some(entry) = common::mount_table_entry_in(table, &root, by_uuid) else {
+        return Some("missing");
+    };
+    let now = entry.split(' ').next().unwrap_or("");
+    (!now.is_empty() && now != uuid).then_some("other")
+}
+/// The drive whose folder holds `path`, the deepest one.
+fn place_holding(cfg: &Value, path: &Path) -> Option<String> {
+    let extras = cfg["storage"]
+        .as_object()
+        .into_iter()
+        .flatten()
+        .map(|(k, _)| k.as_str());
+    ["ssd", "media"]
+        .into_iter()
+        .chain(extras.filter(|k| common::extra_drive(cfg, k)))
+        .filter_map(|place| Some((place, common::drive_folder(cfg, place)?)))
+        .filter(|(_, root)| path.starts_with(root))
+        .max_by_key(|(_, root)| root.components().count())
+        .map(|(place, _)| place.to_string())
+}
+
 /// One of this page's ops (the web server passes their fields on).
 pub fn is_op(op: &str) -> bool {
     op == "app_storage_state" || job_of(op).is_some()
 }
 /// The ops of this page, as the control service answers them.
-pub fn answer(storage: &Storage, op: &str, request: &Value) -> Option<Value> {
+pub fn answer(storage: &Storage, op: &str, request: &Value, cfg: &Value) -> Option<Value> {
     if op == "app_storage_state" {
-        return Some(storage.state());
+        return Some(storage.state(cfg));
     }
     job_of(op)?;
     Some(storage.start(op, request))
@@ -490,6 +570,20 @@ mod tests {
         assert!(needs_pin("app_drive_use", &erase()));
         assert!(needs_pin("app_data_delete_old", &json!({})));
         assert!(needs_pin("app_mirror_add", &json!({})));
+        // Try again and Give it up (T1-18): the PIN again, nothing else asked.
+        for op in ["app_data_retry", "app_data_give_up"] {
+            assert!(needs_pin(op, &json!({})), "{op}");
+            let asked = checked(op, &json!({"kind": "photos", "to": "d3", "pin": "1"})).unwrap();
+            assert_eq!(
+                asked["job"],
+                if op.ends_with("retry") {
+                    "retry"
+                } else {
+                    "give_up"
+                }
+            );
+            assert_eq!(asked.as_object().unwrap().len(), 1, "{asked}");
+        }
         assert!(!needs_pin("app_data_move", &json!({})));
         for (key, bad) in [
             ("disk", json!("sdc")),
@@ -609,10 +703,11 @@ mod tests {
         fs::write(root.join("state/journal.json"), "{}").unwrap();
         let cut = s.start("app_storage_look", &json!({}));
         assert_eq!(cut["error"], "E47");
-        assert!(cut["message"]
-            .as_str()
-            .unwrap()
-            .contains("Restart the server"));
+        let said = cut["message"].as_str().unwrap();
+        assert!(
+            said.contains("Try again") && said.contains("Give it up"),
+            "{said}"
+        );
         assert!(s.job()["unfinished"] == true);
         // T1-20: "Try again" and "Give it up" are the way on past it, never a lock for good.
         assert_eq!(
@@ -637,12 +732,72 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
+    /// The stuck job (T1-18) as /api/status gives it: the drives it needs, and which is
+    /// away and why (nothing mounted there, another filesystem there, or there).
+    #[test]
+    fn a_stuck_job_names_the_drives_it_needs_and_the_one_that_is_away() {
+        let root = std::env::temp_dir().join(format!("neko-stuck-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let by_uuid = root.join("by-uuid");
+        fs::create_dir_all(&by_uuid).unwrap();
+        let (one, two) = (root.join("sdx1"), root.join("sdy1"));
+        fs::write(&one, b"").unwrap();
+        fs::write(&two, b"").unwrap();
+        std::os::unix::fs::symlink(&one, by_uuid.join("aaaa")).unwrap();
+        std::os::unix::fs::symlink(&two, by_uuid.join("bbbb")).unwrap();
+        let cfg = json!({"data_mount": "/srv/nekoserver", "media_mount": "/mnt/nekoserver-media",
+            "storage": {"media_hdd": {"uuid": "aaaa"}, "d3": {"uuid": "cccc"}, "d4": {"uuid": "dddd"}}});
+        let (one, two) = (one.display(), two.display());
+        // The media drive there; d3 holds another disk; d4 is not mounted.
+        let table = format!(
+            "36 30 8:1 / /mnt/nekoserver-media rw - ext4 {one} rw\n\
+             37 30 8:2 / /mnt/nekoserver-drives/d3 rw - ext4 {two} rw\n"
+        );
+        let journal = json!({"job": "move", "committed": true, "request": {"kind": "photos"},
+            "undo": {"here": "media", "to": "d3"}});
+        let stuck = stuck_in(&cfg, &journal, &table, &by_uuid);
+        assert_eq!(
+            stuck,
+            json!({"job": "move", "kind": "photos", "committed": true, "needs": [
+                {"place": "media", "words": "Media and backups drive", "away": null},
+                {"place": "d3", "words": "Extra drive d3", "away": "other"}]})
+        );
+        // Leaving a lost drive: only the one it went to.
+        let left = json!({"job": "back", "undo": {"here": "d4", "to": "media", "here_away": true}});
+        assert_eq!(
+            stuck_in(&cfg, &left, &table, &by_uuid)["needs"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        // A delete: the drive that holds the old copy, the deepest.
+        let delete = json!({"job": "delete_old", "committed": true,
+            "undo": {"deleting": "/mnt/nekoserver-drives/d4/nekoserver-deleting-x"}});
+        let needs = &stuck_in(&cfg, &delete, &table, &by_uuid)["needs"];
+        assert_eq!(
+            needs,
+            &json!([{"place": "d4", "words": "Extra drive d4", "away": "missing"}])
+        );
+        // Another job, or a journal that can't be read: nothing named.
+        assert_eq!(
+            stuck_in(&cfg, &Value::Null, "", &by_uuid)["needs"],
+            json!([])
+        );
+        let (s, _, state) = storage("stuck");
+        assert_eq!(s.stuck(&cfg), Value::Null, "no journal, nothing stuck");
+        fs::write(state.join("state/journal.json"), "{}").unwrap();
+        assert_eq!(s.job_with(&cfg)["stuck"]["needs"], json!([]));
+        let _ = fs::remove_dir_all(&state);
+        let _ = fs::remove_dir_all(&root);
+    }
+
     /// storage-state: null before the first look; a result left "working" by a run that
     /// ended is said as stopped; progress only for the job at work.
     #[test]
     fn the_state_says_how_the_last_job_ended() {
         let (s, systemd, root) = storage("state");
-        let state = s.state();
+        let state = s.state(&json!({}));
         assert_eq!(state["looked_at"], Value::Null);
         assert_eq!(state["storage_job"]["working"], false);
         assert_eq!(state["storage_job"]["result"], Value::Null);
@@ -657,7 +812,7 @@ mod tests {
         common::atomic_json(&root.join("run/progress.json"),
             &json!({"format": "neko-storage-v1", "id": "aa", "step": "copy", "step_words": "Copying your photos",
                 "bytes_done": 5, "bytes_total": 10, "files_done": 1, "files_total": 2, "percent": 50.0})).unwrap();
-        let state = s.state();
+        let state = s.state(&json!({}));
         assert_eq!(state["looked_at"], 5.0);
         assert!(state["look"].get("format").is_none());
         let job = &state["storage_job"];

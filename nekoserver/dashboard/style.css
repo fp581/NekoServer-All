@@ -1994,6 +1994,17 @@ body.tv {
   margin: 18px 0 10px;
   font-size: 16px;
 }
+/* A drive's long name ("Media and backups drive") in a badge, beside a card's title on a
+ * phone at 320 px: the badge goes under the title, and wraps (the browser test). */
+.drive-kind .card-heading,
+.drive-disk .card-heading {
+  flex-wrap: wrap;
+}
+.drive-kind .card-heading .badge,
+.drive-disk .card-heading .badge {
+  max-width: 100%;
+  white-space: normal;
+}
 .drive-disk p,
 .drive-kind p,
 .drive-mirror h3,

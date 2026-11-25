@@ -364,7 +364,7 @@ class DriveTests(Jobs):
     def test_a_drive_with_data_on_it_is_never_given_up(self):
         self.config['locations']['music'] = 'd3'
         self.assertEqual(self.run_job('release', drive='d3'), 1)
-        self.assertIn('Move them first', last_result(self.root)['message'])
+        self.assertIn('Your music is on it. Move it first', last_result(self.root)['message'])
 
     def test_a_drive_with_a_media_folder_of_the_person_on_it_is_never_given_up(self):
         self.config['placement'] = {'movies': {'extra': [{'path': str(self.root / 'drives/d3/My films')}]}}

@@ -3878,7 +3878,7 @@ pub fn run(a: &Args) -> Result<()> {
     // Where each kind of data is, and the Drives page's job (storage.rs).
     let storage = crate::storage::Storage::default();
     result["data_kinds"] = json!(crate::storage::data_kinds(&cfg, &storage.look()));
-    result["storage_job"] = storage.job();
+    result["storage_job"] = storage.job_with(&cfg);
     mark_held(&mut result);
     result["alerts"] = alerts(&result);
     // The readings are published even when the SSD can't keep the collector's own state

@@ -525,6 +525,15 @@ KIND_WORDS = {
     'music': 'music',
     'cloud': 'Nextcloud files',
 }
+# Music is one thing, the other kinds many (T4-101-3: "Your music are on Extra drive d3 now").
+ONE = {'are': 'is', 'were': 'was', 'them': 'it', 'their': 'its', 'they': 'it', 'stay': 'stays'}
+
+
+def verb(kind, word):
+    """`word` ("are", "were", "them", "their", "they", "stay") as said of a kind's data."""
+    return ONE[word] if kind == 'music' else word
+
+
 PLACE_WORDS = {'ssd': 'Apps drive', 'media': 'Media and backups drive'}
 # Room left free on the new drive beyond what is moved (as migrate.MARGIN).
 MARGIN = 1.05
@@ -691,7 +700,7 @@ def target_problem(config, kind, to, size):
     if gone:
         return gone
     if same_drive(root, root_of(config, place_of(config, kind))):
-        return f'It is the drive your {KIND_WORDS[kind]} are on already.'
+        return f'It is the drive your {KIND_WORDS[kind]} {verb(kind, "are")} on already.'
     need, free = int(size * MARGIN), free_bytes(root)
     if free < need:
         return f'Not enough room: needs {size_words(need)}, {size_words(free)} free.'
@@ -775,8 +784,9 @@ def weekly_copy_drive(config):
 def beside_words(config, kinds):
     """What the move window says of a move that backs `kinds` up on their own drive."""
     names = ' and '.join(KIND_WORDS[k] for k in kinds)
+    they_are = 'it is' if kinds == ['music'] else 'they are'  # music is one thing
     said = (
-        f'Your {names} would then be backed up on the drive they are on. That backup protects you from a '
+        f'Your {names} would then be backed up on the drive {they_are} on. That backup protects you from a '
         'mistake (a file deleted or changed), not from losing that drive.'
     )
     if 'photos' in kinds:
@@ -822,7 +832,7 @@ def release_problem(config, drive, copies):
 
     for kind in KINDS:
         if place_of(config, kind) == drive:
-            return f'Your {KIND_WORDS[kind]} are on it. Move them first.'
+            return f'Your {KIND_WORDS[kind]} {verb(kind, "are")} on it. Move {verb(kind, "them")} first.'
     if drive in (config.get(INSTALL_SECTION) or {}).values():
         return 'Apps keep their settings on it. Move them in setup first.'
     if any(c['place'] == drive for c in copies):
@@ -1431,7 +1441,7 @@ def move(job):
     kind, to = job.request['kind'], job.request['to']
     here = place_of(job.config, kind)
     if to == here:
-        raise Stop(f'Your {KIND_WORDS[kind]} are on {place_words(to)} already. Nothing was changed.')
+        raise Stop(f'Your {KIND_WORDS[kind]} {verb(kind, "are")} on {place_words(to)} already. Nothing was changed.')
     need(job, here, to)
     size = du(paths(job.config, kind, here))
     problem = target_problem(job.config, kind, to, size)
@@ -1440,8 +1450,9 @@ def move(job):
     beside = beside_backups(job.config, kind, to)
     if beside and job.request.get('beside_ok') is not True:
         raise Stop(
-            beside_words(job.config, beside) + ' Tick that you understand in the move window to move them anyway. '
-            'Nothing was changed.'
+            beside_words(job.config, beside)
+            + f' Tick that you understand in the move window to move {"it" if kind == "music" else "them"} anyway. '
+            + 'Nothing was changed.'
         )
     staging = root_of(job.config, to) / NEW_COPY.format(kind=kind, id=job.id)
     new = paths(job.config, kind, to, staging)
@@ -1451,8 +1462,8 @@ def move(job):
     job.journal('copy', False, staging=str(staging), here=here, to=to, before=steps_working(job.config))
     switch_data(job, kind, here, to, paths(job.config, kind, here), new, size)
     return (
-        f'Your {KIND_WORDS[kind]} are on {place_words(to)} now. The old copy stays on {place_words(here)} until you '
-        'delete it.'
+        f'Your {KIND_WORDS[kind]} {verb(kind, "are")} on {place_words(to)} now. The old copy stays on '
+        f'{place_words(here)} until you delete it.'
     )
 
 
@@ -1738,13 +1749,22 @@ def undo_lost_switch(job, kind, here):
 
 
 AWAY_LOST_WORDS = (
-    '{gone} So your {kind} stay on {here}, as before the move to it. What the apps wrote there after the '
+    '{gone} So your {kind} {stay} on {here}, as before the move to it. What the apps wrote there after the '
     'switch stays on {to}.'
 )
 LOST_WORDS = (
-    'The power went off just as your {kind} were being switched to {to}, and the copy there did not survive it. '
-    'They stay on {here}, as before. Nothing was changed.'
+    'The power went off just as your {kind} {were} being switched to {to}, and the copy there did not survive '
+    'it. {They} {stay} on {here}, as before. Nothing was changed.'
 )
+
+
+def lost_words(kind, to, here, gone, went_away):
+    """What a lost switch says: the drive it went to away (`went_away`), or its copy lost."""
+    words = AWAY_LOST_WORDS if went_away else LOST_WORDS
+    said = {word: verb(kind, word) for word in ('were', 'stay')}
+    return words.format(
+        kind=KIND_WORDS[kind], to=to, here=here, gone=gone, They=verb(kind, 'they').capitalize(), **said
+    )
 
 
 def finish_lost(job, kind, here):
@@ -1762,11 +1782,10 @@ def finish_lost(job, kind, here):
     finally:
         migrate.start_again(stopped, job.out)
     kept, to = job.undo().get('kept'), job.undo()['to']
-    words = AWAY_LOST_WORDS if job.undo().get('away') == to else LOST_WORDS
     gone = away(job.config, to) or f'{place_words(to)} is not connected.'
     raise Stop(
-        words.format(kind=KIND_WORDS[kind], to=place_words(to), here=place_words(here), gone=gone) + also,
-        'Move them again from the Drives page.'
+        lost_words(kind, place_words(to), place_words(here), gone, job.undo().get('away') == to) + also,
+        f'Move {verb(kind, "them")} again from the Drives page.'
         + (f' What was at the new place is kept in {kept}: look there for anything added since.' if kept else ''),
     )
 
@@ -1806,22 +1825,23 @@ def finish_move(job, kind, here, stopped):
         paused(job)
     if other and gone:
         raise Stop(
-            f'Your {KIND_WORDS[kind]} are on {place_words(to)} now. {gone} Setup, run again for the move, '
+            f'Your {KIND_WORDS[kind]} {verb(kind, "are")} on {place_words(to)} now. {gone} Setup, run again for the move, '
             f'stopped: {other}',
             f'Run setup again (sudo bash install.sh) once {place_words(here)} is back, or once nothing else is on '
             'it and it is given up on the Drives page.',
         )
     if other:
         raise Stop(
-            f'Your {KIND_WORDS[kind]} are on {place_words(job.undo()["to"])} now and their apps use them there. '
-            f'Setup, run again for the move, ended with a step that does not use them failing: {other}',
+            f'Your {KIND_WORDS[kind]} {verb(kind, "are")} on {place_words(job.undo()["to"])} now and '
+            f'{verb(kind, "their")} apps use {verb(kind, "them")} there. Setup, run again for the move, ended with '
+            f'a step that does not use {verb(kind, "them")} failing: {other}',
             'Run setup again (sudo bash install.sh) once that is fixed.',
         )
     job.progress('check')
     before = job.undo().get('before') or []
     problem = before and migrate.server_check(job.config, before)
     if problem:
-        raise Stop(f'Your {KIND_WORDS[kind]} were moved, but the server check after it says: {problem}')
+        raise Stop(f'Your {KIND_WORDS[kind]} {verb(kind, "were")} moved, but the server check after it says: {problem}')
 
 
 def paused(job):
@@ -1934,7 +1954,8 @@ def unswitch(job, kind, here, stopped, why):
         migrate.start_again(stopped, job.out)
         paused(job)
     raise Stop(
-        f'Your {KIND_WORDS[kind]} stay on {place_words(here)}: setup could not use them on {place_words(to)} '
+        f'Your {KIND_WORDS[kind]} {verb(kind, "stay")} on {place_words(here)}: setup could not use '
+        f'{verb(kind, "them")} on {place_words(to)} '
         f'({why}). Nothing was changed.' + also,
         f'Setup\'s log says why: {job.state / f"setup-{job.id}.log"}',
     )
@@ -2054,14 +2075,16 @@ def back(job):
         # back as it is, and nothing is read or written on the lost drive.
         switch_data(job, kind, here, to, [], paths(job.config, kind, to, staging), 0)
         return (
-            f'Your {KIND_WORDS[kind]} are back on {place_words(to)}, as the old copy had them. {lost} What was '
-            f'added to them there after the move is not in it; it stays on {place_words(here)} if that drive '
+            f'Your {KIND_WORDS[kind]} {verb(kind, "are")} back on {place_words(to)}, as the old copy had '
+            f'{verb(kind, "them")}. {lost} What was added to {verb(kind, "them")} there after the move is not in it; '
+            f'it stays on {place_words(here)} if that drive '
             'comes back.'
         )
     size = du(paths(job.config, kind, here))
     switch_data(job, kind, here, to, paths(job.config, kind, here), paths(job.config, kind, to, staging), size)
     return (
-        f'Your {KIND_WORDS[kind]} are back on {place_words(to)}. The copy on {place_words(here)} stays until you '
+        f'Your {KIND_WORDS[kind]} {verb(kind, "are")} back on {place_words(to)}. The copy on {place_words(here)} '
+        'stays until you '
         'delete it.'
     )
 
@@ -2280,7 +2303,7 @@ def give_up(job, stuck):
             if undo.get('here') and place_of(cut.config, kind) != undo['here']:
                 wait_for(cut.state, {'job': 'retire', 'kind': kind, 'here': undo['here'], 'id': cut.id})
             words = (
-                f'The job was given up. Your {KIND_WORDS.get(kind, kind)} are on '
+                f'The job was given up. Your {KIND_WORDS.get(kind, kind)} {verb(kind, "are")} on '
                 f'{place_words(place_of(cut.config, kind))}, as the settings say. Run setup again '
                 '(sudo bash install.sh) so every app uses that place.'
             )
