@@ -508,6 +508,42 @@ pub fn same_folder(a: &Path, b: &Path) -> bool {
 }
 /// The extra drives something is placed on: an app's files ("locations"), or its
 /// settings and database ("installed", 0.50.0). The ones every job checks.
+/// The kinds ("movies", "music": rows of the placement table) that have a folder the Media
+/// folders page made on drive `name` (part C: <name>/media/<kind>, saved with "made").
+pub fn made_on(cfg: &serde_json::Value, name: &str) -> Vec<String> {
+    cfg["placement"]
+        .as_object()
+        .into_iter()
+        .flatten()
+        .filter(|(_, row)| {
+            row["extra"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .any(|entry| entry["made"] == name)
+        })
+        .map(|(kind, _)| kind.clone())
+        .collect()
+}
+/// The extra drives a drive's return and the dashboard watch: those in use (below), then
+/// those holding only a folder the Media folders page made (T1-19: one pulled and plugged
+/// in again was never mounted again, nor its apps restarted, nor shown as away).
+pub fn drives_watched(cfg: &serde_json::Value) -> Vec<String> {
+    let mut found = drives_in_use(cfg);
+    let made = cfg["placement"]
+        .as_object()
+        .into_iter()
+        .flatten()
+        .flat_map(|(_, row)| row["extra"].as_array().into_iter().flatten())
+        .filter_map(|entry| entry["made"].as_str())
+        .filter(|name| extra_drive(cfg, name));
+    for name in made {
+        if !found.iter().any(|f| f == name) {
+            found.push(name.to_string());
+        }
+    }
+    found
+}
 pub fn drives_in_use(cfg: &serde_json::Value) -> Vec<String> {
     let mut found: Vec<String> = cfg["locations"]
         .as_object()
@@ -1784,6 +1820,16 @@ mod media_answer_tests {
         );
         assert!(drive_folder(&cfg, "d4").is_none());
         assert_eq!(drives_in_use(&cfg), ["d3"]);
+        // Coordinator (1) after T1-19: a drive holding only a folder the Media folders page
+        // made (part C) is watched too, after the drives in use; the jobs' list is as it was.
+        let mut made = cfg.clone();
+        made["storage"]["d4"] = json!({"uuid": "d"});
+        made["placement"] = json!({"movies": {"extra": [{"path": "/mnt/nekoserver-drives/d4/media/movies", "made": "d4"},
+            {"path": "/srv/mine", "made": ""}]}, "music": {"extra": [{"path": "/x", "made": "d9"}]}});
+        assert_eq!(drives_in_use(&made), ["d3"]);
+        assert_eq!(super::drives_watched(&made), ["d3", "d4"]);
+        assert_eq!(super::made_on(&made, "d4"), ["movies"]);
+        assert!(super::made_on(&made, "d3").is_empty());
         assert_eq!(
             files_root(&cfg, "photos").unwrap(),
             Path::new("/mnt/nekoserver-drives/d3")

@@ -331,7 +331,11 @@ fn apps_on_drive(cfg: &Value, key: &str) -> Vec<String> {
     let Some(folder) = common::drive_folder(cfg, place) else {
         return vec![];
     };
-    let here = |kind: &str| common::files_root(cfg, kind).is_ok_and(|root| root == folder);
+    let made = common::made_on(cfg, place);
+    let here = |kind: &str| {
+        common::files_root(cfg, kind).is_ok_and(|root| root == folder)
+            || made.iter().any(|m| m == kind)
+    };
     common::SHARED["apps"]
         .as_array()
         .into_iter()
@@ -820,7 +824,7 @@ fn storage_rows(cfg: &Value) -> Result<Vec<DriveCard>> {
             saved("media_hdd", "fstype"),
         ),
     ];
-    for drive in common::drives_in_use(cfg) {
+    for drive in common::drives_watched(cfg) {
         if let Some(folder) = common::drive_folder(cfg, &drive) {
             let name = extra_drive_name(cfg, &drive);
             let (uuid, fs) = (saved(&drive, "uuid"), saved(&drive, "fstype"));
@@ -7211,6 +7215,14 @@ mod split_tests {
         );
         // Music on the SSD and Nextcloud's files on the media drive, by default.
         assert_eq!(apps_on_drive(&cfg, "media_hdd"), ["nextcloud"]);
+        // A folder the Media folders page made there counts as its kind does (part C).
+        let made = json!({"data_mount": "/srv/nekoserver", "media_mount": "/mnt/nekoserver-media",
+            "storage": {"data_ssd": {"uuid": "a"}, "media_hdd": {"uuid": "b"}, "d4": {"uuid": "d"}},
+            "placement": {"music": {"extra": [{"path": "/mnt/nekoserver-drives/d4/media/music", "made": "d4"}]}}});
+        assert_eq!(apps_on_drive(&made, "d4"), ["navidrome", "lidarr"]);
+        let rows = &source
+            [source.find("fn storage_rows(").unwrap()..source.find("fn storage(cfg").unwrap()];
+        assert!(rows.contains("common::drives_watched(cfg)"));
         assert!(apps_on_drive(&cfg, "d4").is_empty());
         let d = json!({"id": "d3", "name": "Extra drive d3", "status": "missing",
             "apps": ["jellyfin", "immich", "radarr"]});
