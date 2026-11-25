@@ -323,7 +323,7 @@ fn ask_control(socket: &Path, request: &Value) -> std::result::Result<Value, &'s
 }
 
 /// The Drives page's fields (storage.rs checks each one).
-const STORAGE_FIELDS: [&str; 10] = [
+const STORAGE_FIELDS: [&str; 11] = [
     "disk",
     "serial",
     "size_bytes",
@@ -334,6 +334,8 @@ const STORAGE_FIELDS: [&str; 10] = [
     "to",
     "copy",
     "array",
+    // The move window's tick for a move that backs a kind up on its own drive (1.0.1).
+    "beside_ok",
 ];
 const MEDIA_FIELDS: [&str; 7] = [
     "change",
@@ -1337,6 +1339,11 @@ mod tests {
                 "size_bytes": 9, "how": "erase", "confirm": "9 B 1", "pin": "123456", "kind": "photos",
                 "to": "d3", "copy": "c", "array": "md-md0", "drive": "d3", "token": "t"})
         );
+        // The move window's tick for a move that backs a kind up on its own drive goes on
+        // (storage.rs passes it to the job only when it is true).
+        let tick = json!({"kind": "photos", "to": "d3", "beside_ok": true});
+        let request = control_request("app_data_move", &tick, &Who::default(), None);
+        assert_eq!(request["beside_ok"], true, "{request}");
         let request = control_request("app_media_change", &drive, &Who::default(), None);
         assert!(request.get("disk").is_none() && request.get("confirm").is_none());
         let request = control_request("app_restart", &body, &Who::default(), None);
