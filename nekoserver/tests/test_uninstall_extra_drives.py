@@ -302,5 +302,49 @@ class StaleSettingsTests(unittest.TestCase):
         self.assertIn("This server's data was moved from the dashboard", source)
 
 
+class MadeFolderTests(unittest.TestCase):
+    """T3-101-4: part C's Media folders page makes <dN>/media/<kind> on an Extra drive for
+    the person's films or music (saved with "made": "dN"). The plan listed <dN>/media as
+    not NekoServer's and the folder apart from its drive; it is named under its drive, as
+    the person's own folder, kept whatever is chosen."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.system = FakeSystem(tmp.name).populate()
+        self.system.drives[D4] = 'f4449405-4444'
+        self.system.write(D4 + '/media/movies/mine.mkv')
+        self.system.write(D4 + '/films/other.mkv')
+        made = {'path': D4 + '/media/movies', 'holds': 'movies', 'use': 'in_place', 'made': 'd4'}
+        settings = {
+            **MOVED,
+            'placement': {'movies': {'extra': [made]}},
+        }
+        self.plan = self.system.plan(settings=settings)
+
+    def test_a_made_folder_is_named_under_its_drive_and_kept(self):
+        lines = self.plan.places()
+        drive = next(i for i, line in enumerate(lines) if line.startswith('   - ' + D4 + ' ('))
+        made = next(i for i, line in enumerate(lines) if (D4 + '/media/movies') in line)
+        self.assertGreater(made, drive)
+        self.assertNotIn('   - ', lines[made])  # under the drive, not a place of its own
+        self.assertIn('made by the Media folders page', lines[made])
+        self.assertIn('kept, never removed', lines[made])
+        self.assertEqual(sum((D4 + '/media/movies') in line for line in lines), 1)
+
+    def test_its_parent_is_not_listed_as_not_nekoservers_and_nothing_of_it_goes(self):
+        others = [str(p) for p in self.plan.others()]
+        self.assertFalse(any(p.endswith(D4 + '/media') for p in others), others)
+        self.assertTrue(any(p.endswith(D4 + '/films') for p in others), others)
+        for key in ALL:
+            self.assertFalse(any('/media/movies' in str(p) for p in self.plan.groups[key]['paths']), key)
+
+    def test_a_made_folder_on_no_drive_the_plan_names_stays_a_folder_of_its_own(self):
+        folder = {'path': D9 + '/media/music', 'what': 'music', 'share': '', 'mount': '', 'made': 'd9'}
+        self.assertEqual(self.plan.made_on(folder), '')
+        moved = {'path': '/srv/elsewhere/media/music', 'what': 'music', 'share': '', 'mount': '', 'made': 'd4'}
+        self.assertEqual(self.plan.made_on(moved), '')
+
+
 if __name__ == '__main__':
     unittest.main()
