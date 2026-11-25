@@ -458,6 +458,17 @@ def folder_that_can_be_added(config, kind, asked):
         raise Refusal(str(refused)) from None
 
 
+def made_and_backed_up(entry, found, asked, made, out):
+    """The entry of a folder made on an Extra drive names it (`made`), and music asked
+    about the backup has the answer: as setup does, only music on a NAS (or in a folder
+    made on an Extra drive, part C) is asked; yes unless the answer was no."""
+    if made:
+        entry['made'] = made
+    if entry['holds'] == 'music' and (made or existing_page.on_network_share(found)):
+        entry['backup'] = asked.get('backup', True)
+        out['notes'].append(f'Your {WORDS["music"]}: {existing_page.BACKED_UP[entry["backup"]]}')
+
+
 def add(config, asked, out, made=None):
     """Connect a folder (or have it copied). Returns the kinds whose apps are to be told.
     `made`: the Extra drive NekoServer made the folder on (make), saved with it."""
@@ -478,13 +489,7 @@ def add(config, asked, out, made=None):
     elif asked['downloads']:
         out['notes'].append(answer['note'])
     entry = existing_media.entry_for(kind, found, new_files=bool(answer.get('ok')))
-    if made:
-        entry['made'] = made
-    if kind == 'music' and (made or existing_page.on_network_share(found)):
-        # As setup does: only music on a NAS (or in a folder made on an Extra drive, part
-        # C) is asked about; yes unless the answer was no.
-        entry['backup'] = asked.get('backup', True)
-        out['notes'].append(f'Your {words}: {existing_page.BACKED_UP[entry["backup"]]}')
+    made_and_backed_up(entry, found, asked, made, out)
     staying = existing_media.download_only(config, kind) if entry['new_files'] else None
     before = existing_media.new_files_folder(config, kind)
     config['placement'] = existing_media.with_choice(config, entry)['placement']

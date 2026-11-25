@@ -6621,6 +6621,22 @@ function releaseDisk(d) {
     () => void drivesChange('drive-release', { drive: d.drive }, 'Disconnecting the drive…')
   );
 }
+/* An Extra drive's own actions: a folder for films, shows or music on it (part C), and
+ * "Stop using this drive" or why not. */
+function extraDriveActions(d, row, busy, actions, nodes) {
+  if (d.drive) {
+    const media = button('Use for films, shows or music', () => useDriveForMedia(d.drive), 'button small secondary');
+    media.setAttribute('aria-label', 'Use ' + text(d.drive_words, d.drive) + ' for films, shows or music');
+    actions.append(media);
+  }
+  if (row.can_release) {
+    const stop = button('Stop using this drive', () => releaseDisk(d));
+    stop.disabled = busy;
+    actions.append(stop);
+  } else if (row.why_not) {
+    nodes.push(hint(text(row.why_not)));
+  }
+}
 /* What can be done with a disk, from the root tool's last look (never worked out here). */
 function diskActions(d, row, busy) {
   const nodes = [],
@@ -6644,17 +6660,8 @@ function diskActions(d, row, busy) {
   } else if (row.refused && d.role === 'none') {
     nodes.push(hint(text(object(row.refused).words, 'It cannot be used now.')));
   }
-  if (d.role === 'extra' && d.drive) {
-    const media = button('Use for films, shows or music', () => useDriveForMedia(d.drive), 'button small secondary');
-    media.setAttribute('aria-label', 'Use ' + text(d.drive_words, d.drive) + ' for films, shows or music');
-    actions.append(media);
-  }
-  if (d.role === 'extra' && row.can_release) {
-    const stop = button('Stop using this drive', () => releaseDisk(d));
-    stop.disabled = busy;
-    actions.append(stop);
-  } else if (d.role === 'extra' && row.why_not) {
-    nodes.push(hint(text(row.why_not)));
+  if (d.role === 'extra') {
+    extraDriveActions(d, row, busy, actions, nodes);
   }
   if (actions.children.length) {
     nodes.push(actions);
