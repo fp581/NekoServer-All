@@ -1981,19 +1981,22 @@ def undo_move(job):
     # nekoserver-new- folder, which no app uses (T1-18).
     there = not (to and away(job.config, to))
     if to and switching and there:
-        for copy_, target, skip in zip(
-            paths(job.config, kind, to, staging), paths(job.config, kind, to), kind_skips(kind)
-        ):
-            ours = own_entries(target, skip) if skip else not copy_.exists()
-            if target.exists() and not os.path.ismount(target) and ours:
-                copy_.parent.mkdir(parents=True, exist_ok=True)
-                move_folder(target, copy_, skip)
+        take_out_of_place(job, kind, to, staging)
     if kind == 'backups' and here not in (None, 'media') and switching:
         rebind_backups(job.config, job.out)
     if there and job.action == 'move' and staging.name.startswith('nekoserver-new-') and staging.is_dir():
         drop_staging(job, staging, journal.get('phase') == 'lost')
     if job.action == 'back':
         restore_back_copy(job, journal)
+
+
+def take_out_of_place(job, kind, to, staging):
+    """The new copy taken out of the apps' places again, into its staging folder."""
+    for copy_, target, skip in zip(paths(job.config, kind, to, staging), paths(job.config, kind, to), kind_skips(kind)):
+        ours = own_entries(target, skip) if skip else not copy_.exists()
+        if target.exists() and not os.path.ismount(target) and ours:
+            copy_.parent.mkdir(parents=True, exist_ok=True)
+            move_folder(target, copy_, skip)
 
 
 def drop_staging(job, staging, lost):
