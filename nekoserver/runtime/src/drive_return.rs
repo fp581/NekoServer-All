@@ -265,7 +265,7 @@ pub fn run(a: &Args) -> Result<()> {
     if !recovering && !remounted {
         // A drive of a group's own came back mounted by systemd, or this is an ordinary
         // start: an app Docker could not start while its drive was away starts now.
-        start_failed_apps("Drive return");
+        start_failed_apps("Drive return", &missed);
         crate::shared_folders::check(&cfg);
         return left_out(&missed);
     }
@@ -290,7 +290,7 @@ pub fn run(a: &Args) -> Result<()> {
     let paths: Vec<PathBuf> = drives.into_iter().map(|(p, _, _)| p).collect();
     let started = start_again(&cfgpath, &paths[0], &paths[1], "Drive return");
     every_app_tried(started, &missed, || {
-        start_failed_apps("Drive return");
+        start_failed_apps("Drive return", &missed);
         crate::shared_folders::check(&cfg);
     })
 }
@@ -486,8 +486,11 @@ fn plain_uuid(uuid: &str) -> bool {
 /// drive was away; their Compose files never let Docker make it) are started now. Docker
 /// tries such an app only once, when it starts, and `unless-stopped` does not try again.
 /// An app a person or a job stopped is never started here (Docker keeps no start error
-/// for it); one whose drive is still away fails again and is said.
-fn start_failed_apps(who: &str) {
+/// for it); one whose drive is still away fails again and is said. One with a folder on
+/// a bind that did not come back (`missed`) stays stopped: Docker would start it on the
+/// empty folder under the bind, and Jellyfin or the Arr apps would then drop the films
+/// they no longer see (T5, review of T1-13).
+fn start_failed_apps(who: &str, missed: &[String]) {
     if common::setup_running() {
         return; // setup starts the apps itself
     }
@@ -521,6 +524,10 @@ fn start_failed_apps(who: &str) {
         .and_then(|text| serde_json::from_str(&text).ok())
         .unwrap_or_default();
     for (id, name) in failed_to_start(&inspected) {
+        if let Some(bind) = held_by_missed_bind(&inspected, &id, missed) {
+            println!("{who}: {name} stays stopped: {bind} did not come back");
+            continue;
+        }
         match run_ok(&["docker", "start", &id], 120) {
             Ok(_) => println!(
                 "{who}: started {name} again (Docker could not start it while its drive was away)"
@@ -530,6 +537,36 @@ fn start_failed_apps(who: &str) {
             }
         }
     }
+}
+
+/// The bind that did not come back that the container `id` (from `docker inspect`) has a
+/// folder on, or inside one of its folders: either way it would see the empty folder under
+/// the bind. None when it has none.
+fn held_by_missed_bind(
+    inspected: &serde_json::Value,
+    id: &str,
+    missed: &[String],
+) -> Option<String> {
+    let container = inspected
+        .as_array()?
+        .iter()
+        .find(|c| c["Id"].as_str() == Some(id))?;
+    let sources: Vec<&Path> = container["Mounts"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|m| m["Source"].as_str())
+        .map(Path::new)
+        .collect();
+    missed
+        .iter()
+        .find(|bind| {
+            let bind = Path::new(bind.as_str());
+            sources
+                .iter()
+                .any(|source| source.starts_with(bind) || bind.starts_with(source))
+        })
+        .cloned()
 }
 
 /// From `docker inspect`: (id, name) of each NekoServer app Docker could not start.
@@ -1212,5 +1249,57 @@ mod tests {
         assert!(run.contains("missed.extend(binds_back(path))"));
         assert!(!run.contains(concat!("\"Drive return\")", "?")));
         assert!(run.find("bring_back_placed(").unwrap() < run.find("every_app_tried(").unwrap());
+    }
+    /// T5, review of T1-13: an app with a folder on a bind that did not come back would be
+    /// started on the empty folder under it (and Jellyfin drop the films it no longer sees):
+    /// it stays stopped. A folder on the bind, or holding it, counts; others start.
+    #[test]
+    fn an_app_on_a_bind_that_did_not_come_back_stays_stopped() {
+        let app = |id: &str, sources: &[&str]| {
+            let mounts: Vec<_> = sources
+                .iter()
+                .map(|s| serde_json::json!({"Type": "bind", "Source": s}))
+                .collect();
+            serde_json::json!({"Id": id, "Mounts": mounts})
+        };
+        let inspected = serde_json::json!([
+            app(
+                "jellyfin",
+                &[
+                    "/mnt/nekoserver-data/appdata/jellyfin",
+                    "/mnt/nekoserver-media/library/movies"
+                ]
+            ),
+            app("radarr", &["/mnt/nekoserver-media/library"]),
+            app(
+                "navidrome",
+                &[
+                    "/mnt/nekoserver-media/music",
+                    "/mnt/nekoserver-media/library-old"
+                ]
+            ),
+            app("immich", &[]),
+            app(
+                "bazarr",
+                &["/mnt/nekoserver-media/library/movies/subtitles"]
+            ),
+        ]);
+        let missed = ["/mnt/nekoserver-media/library/movies".to_string()];
+        let held = |id| held_by_missed_bind(&inspected, id, &missed);
+        assert_eq!(held("jellyfin").as_deref(), Some(missed[0].as_str()));
+        assert_eq!(held("radarr").as_deref(), Some(missed[0].as_str()));
+        assert_eq!(held("navidrome"), None);
+        assert_eq!(held("bazarr").as_deref(), Some(missed[0].as_str()));
+        assert_eq!(held("immich"), None);
+        assert_eq!(held("gone"), None);
+        assert_eq!(held_by_missed_bind(&inspected, "jellyfin", &[]), None);
+        // Both calls hand it what did not come back.
+        let source = include_str!("drive_return.rs");
+        assert_eq!(
+            source
+                .matches(concat!("start_failed_apps(\"Drive return\", ", "&missed)"))
+                .count(),
+            2
+        );
     }
 }
