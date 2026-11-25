@@ -158,13 +158,18 @@ def btrfs_pool(run, uuid):
     rc, said = run(['btrfs', 'filesystem', 'show', '--raw', uuid])
     if rc != 0:
         return None
-    missing, present = None, None
+    missing, present, sizes = None, None, [0]
     for found in re.finditer(r'devid\s+(\d+)\s+size\s+(\d+)\s+used\s+\d+\s+path\s+(.*)', said):
         devid, size, path = int(found[1]), int(found[2]), found[3].strip()
         if 'MISSING' in path or path.startswith('<missing'):
             missing = missing or (devid, size)
-        elif present is None and path.startswith('/dev/'):
-            present = path
+        elif path.startswith('/dev/'):
+            present = present or path
+            sizes.append(size)
+    # Mounted degraded (as a replace needs it), btrfs-progs gives the missing device as
+    # "size 0": the new drive then needs the room of the largest device left.
+    if missing and missing[1] == 0:
+        missing = (missing[0], max(sizes))
     rc, mounted = run(['findmnt', '-n', '-o', 'TARGET', '--source', f'UUID={uuid}'])
     mount = mounted.splitlines()[0].strip() if rc == 0 and mounted.strip() else None
     # A replace at work still lists the missing device until it ends: ask Btrfs itself.

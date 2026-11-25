@@ -84,7 +84,8 @@ class Erase(unittest.TestCase):
     def tool(self, argv, stdin=None, timeout=600):
         self.events.append((tuple(argv), stdin))
         if argv[0] == 'lsblk':
-            return json.dumps({'blockdevices': [self.shown]})
+            shown = self.shown if isinstance(self.shown, list) else [self.shown]
+            return json.dumps({'blockdevices': shown})
         if argv[:2] == ['sfdisk', '--dump']:
             return DUMP
         return ''
@@ -258,6 +259,17 @@ class MirrorLayoutTests(Erase):
                 SETTLE,
             ],
         )
+
+    def test_a_running_members_array_shown_first_is_not_taken_for_the_member(self):
+        """util-linux 2.42 (job D's loop test): asked of an md member, lsblk lists the array
+        it holds first, then the member. The layout is the member's, never the array's."""
+        part2 = self.plug('loop7p2', f'{BY_ID}-part2')
+        self.shown = [
+            {'path': '/dev/md127', 'type': 'raid1', 'pkname': 'sdb2', 'partn': None},
+            {'path': '/dev/sdb2', 'type': 'part', 'pkname': 'sdb', 'partn': 2},
+        ]
+        self.assertEqual(self.erase(layout='mirror_member', like='/dev/sdb2', journal=self.tell), part2)
+        self.assertIn((('sfdisk', '--dump', '/dev/sdb'), None), self.events)
 
     def test_the_members_table_without_its_ids(self):
         self.assertEqual(storage_jobs.member_table('/dev/sdb'), TABLE)

@@ -489,7 +489,9 @@ def mirror_layout(by_id, disk, like, checked, tell, folder):
     """The new disk laid out like a present member `like` of the mirror (/dev path)."""
     if not like:
         raise ValueError('a mirror member is laid out like a present one: name it (like=)')
-    shown = json.loads(run(['lsblk', '-J', '-o', 'PATH,TYPE,PKNAME,PARTN', like]))['blockdevices'][0]
+    # Asked of a running member, lsblk (util-linux 2.42) lists the array it holds first.
+    rows = json.loads(run(['lsblk', '-J', '-o', 'PATH,TYPE,PKNAME,PARTN', like]))['blockdevices']
+    shown = next((row for row in rows if row.get('path') == like), rows[0])
     tell({'phase': 'erase', 'like': like})
     checked()
     run(['wipefs', '--all', disk])

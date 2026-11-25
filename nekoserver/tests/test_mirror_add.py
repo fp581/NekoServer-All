@@ -341,6 +341,22 @@ class Btrfs(unittest.TestCase):
         )
         self.assertEqual([a['id'] for a in mirror_add.degraded(stand.run, '/nonexistent')], [f'btrfs-{UUID}'])
 
+    def test_a_pool_open_degraded_names_no_size_for_its_missing_device(self):
+        """Job D's loop test (btrfs-progs v7.1): mounted degraded, as a replace needs it, the
+        missing device is "size 0 used 0 path  MISSING". The room the new drive needs is
+        then the largest device left (a raid1 member's), never 0 ("no drive left")."""
+        opened = (
+            "Label: none  uuid: 1b2c3d4e-0000-4000-8000-000000000001\n"
+            '\tTotal devices 2 FS bytes used 163840\n'
+            '\tdevid    1 size 332398592 used 109051904 path /dev/loop0p2\n'
+            '\tdevid    2 size 0 used 0 path  MISSING\n'
+        )
+        said = {f'btrfs filesystem show --raw {UUID}': (0, opened), 'btrfs filesystem show --raw': (0, opened)}
+        stand = Stand('/nonexistent', self.dev, answers=self.answers(**said))
+        pool = mirror_add.btrfs_pool(stand.run, UUID)
+        self.assertEqual((pool['devid'], pool['min_bytes'], pool['like']), (2, 332398592, '/dev/loop0p2'))
+        self.assertIsNone(mirror_add.why_not(pool))
+
     def test_a_pool_with_a_replace_at_work_is_refused(self):
         """The missing device is still listed until a replace ends: Btrfs is asked."""
         for said in ((0, '12.5% done, 0 write errs\n'), (0, 'Running\n'), (1, 'ERROR: cannot read\n')):
