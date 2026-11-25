@@ -271,6 +271,16 @@ class MirrorLayoutTests(Erase):
         self.assertEqual(self.erase(layout='mirror_member', like='/dev/sdb2', journal=self.tell), part2)
         self.assertIn((('sfdisk', '--dump', '/dev/sdb'), None), self.events)
 
+    def test_a_member_lsblk_shows_no_row_of_is_refused_before_anything_is_written(self):
+        """T5 on 6bf4df7: a `like` spelled otherwise than lsblk's PATH, with only the array's
+        row to read, would lay the new disk out whole again: refused, nothing written."""
+        self.shown = [{'path': '/dev/md127', 'type': 'raid1', 'pkname': 'sdb2', 'partn': None}]
+        with self.assertRaises(storage_jobs.Refused) as refused:
+            self.erase(layout='mirror_member', like='/dev/sdb2', journal=self.tell)
+        self.assertIn('nothing was erased', str(refused.exception))
+        tools = [event[0][0] for event in self.events if isinstance(event[0], tuple)]
+        self.assertEqual(tools, ['lsblk'])  # read only: no wipefs, no sfdisk
+
     def test_the_members_table_without_its_ids(self):
         self.assertEqual(storage_jobs.member_table('/dev/sdb'), TABLE)
 
