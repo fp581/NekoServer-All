@@ -514,6 +514,18 @@ class Btrfs(unittest.TestCase):
         self.assertEqual(stand.cleared, 1)
         self.assertFalse(any(a.startswith('btrfs replace start') for a in stand.asked))
 
+    def test_a_rebuild_whose_pool_lost_its_drive_waits_and_is_not_counted(self):
+        """T5 on 57eb40c: the pool's drive unplugged, Btrfs lists no such pool at all: that
+        start waits for the drive (journal kept, not one of HOLD_RUNS), as one finding the
+        drive away does; a pool that is listed but not open still counts."""
+        gone = {f'btrfs filesystem show --raw {UUID}': (1, 'ERROR: not a valid btrfs filesystem')}
+        stand = Stand('/nonexistent', self.dev, answers=self.answers(**gone))
+        cut = {'phase': 'rebuild', 'request': POOL, 'undo': {'array': f'btrfs-{UUID}', 'member': 'ata-NEW_S9'}}
+        result = mirror_add.finish(cut, stand.ctx)
+        self.assertEqual(result['state'], 'failed', result)
+        self.assertIn('Plug it in (the same drive)', result['message'])
+        self.assertEqual((stand.cleared, stand.journals), (0, []))
+
     def test_a_pool_whole_again_without_a_replace_record_is_finished(self):
         """Cut after the replace ended: the next mount keeps no record ("Never started"),
         but the pool holds the new drive and misses none, so it is balanced and done."""

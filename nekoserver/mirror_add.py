@@ -535,7 +535,11 @@ def finish(journal, ctx):
     good (a replace still at work keeps the pool shown as rebuilding, so nothing is offered)."""
     undo = journal.get('undo') or {}
     array = find((journal.get('request') or {}).get('array'), ctx.run, ctx.sys_block)
-    gone = drive_gone(array, ctx) if array is not None and array['kind'] == 'btrfs' else None
+    if array is None:
+        # Btrfs lists no such pool: its drive is unplugged (T5 on 57eb40c), so it waits too.
+        gone = 'The drive of this pool is not connected. Plug it in (the same drive), then try again.'
+    else:
+        gone = drive_gone(array, ctx) if array['kind'] == 'btrfs' else None
     if gone:
         # It waits for the drive (T1-18): the journal stays as it is, a start that finds
         # the drive away is not one of the HOLD_RUNS, and the next start finishes it.
