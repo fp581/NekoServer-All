@@ -169,8 +169,9 @@ class MirrorGiveUpTests(Jobs):
         # journal is committed only then), so it goes on in the kernel by itself.
         self.assertNotIn('not made part', said)
         self.assertIn('goes on by itself', said)
-        self.assertIn('sudo btrfs replace status', said)
-        self.assertIn('sudo btrfs filesystem show', said)
+        self.assertIn('"sudo btrfs replace status"', said)
+        self.assertIn('"sudo btrfs filesystem show"', said)
+        self.assertNotIn('  ', said, 'no command set off by two spaces: the page shows one')
 
     def test_an_md_rebuild_given_up_points_to_the_raid_row(self):
         mirror_journal(self.root, 'md-md0')
@@ -178,7 +179,8 @@ class MirrorGiveUpTests(Jobs):
         self.assertIsNone(saved_journal(self.root))
         said = last_result(self.root)['message']
         self.assertIn('A drive of a RAID array failed', said)
-        self.assertIn('cat /proc/mdstat', said)
+        self.assertIn('"cat /proc/mdstat"', said)
+        self.assertNotIn('  ', said)
         self.assertNotIn('not made part', said)
 
 
