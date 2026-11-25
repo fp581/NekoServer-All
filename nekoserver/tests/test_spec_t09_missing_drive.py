@@ -15,7 +15,7 @@ What breaks each test (one line each):
   test_every_job_that_writes_to_a_drive_checks_the_drives_first;
 - a new command in main.rs that is in neither list fails
   test_every_command_of_the_runtime_is_accounted_for;
-- removing the loop over common::drives_in_use from backup::guard fails
+- removing the loop over common::drives_watched from backup::guard fails
   test_the_check_covers_both_drives_and_every_share_in_use;
 - a unit whose ExecStart runs `archive`, `copy` or `database` fails
   test_the_commands_without_a_check_are_never_run_by_a_timer.
@@ -52,7 +52,7 @@ CHECKED = {
     'storage-guard': [('startup', 'run'), ('backup', 'open_job'), GUARD],
     'gateway-guard': [('startup', 'run'), ('backup', 'open_job'), GUARD],
     'drive-return': [('drive_return', 'run'), ('drive_return', 'start_again'), PRESENT],
-    'nas-watch': [('nas_watch', 'run'), GUARD],
+    'nas-watch': [('nas_watch', 'run'), PRESENT],  # an Extra drive away keeps only its apps stopped
     'host-snapshot': [('host_snapshot', 'run'), *COORDINATE],
     'host-resume': [('host_snapshot', 'resume_command'), *COORDINATE],
     'app-snapshot': [('app_snapshot', 'run'), *COORDINATE],
@@ -125,7 +125,7 @@ class MissingDriveTests(unittest.TestCase):
             (('apps', 'shared_lock'), 'backup::guard('),
             (('media', 'run'), 'backup::guard('),
             (('os_policy', 'run'), 'backup::guard('),
-            (('nas_watch', 'run'), 'backup::guard('),
+            (('nas_watch', 'run'), 'backup::guard_present('),
             (('backup', 'seal_passwords'), 'guard('),
             (('drive_return', 'start_again'), 'backup::guard_present('),
         ):
@@ -150,7 +150,8 @@ class MissingDriveTests(unittest.TestCase):
         self.assertIn('checked_drive(c, key, path)?', main)
         for body in (guard, self.functions[PRESENT]):
             self.assertIn('main_drives(&c, data, media)?', body)
-            self.assertIn('for name in common::drives_in_use(&c)', body)  # other drives and NFS shares
+            # other drives, NFS shares, and drives holding only a made folder (part C)
+            self.assertIn('for name in common::drives_watched(&c)', body)
             self.assertIn('checked_drive(&c, &name, &folder)?', body)
         # Only bringing the apps back lets a placed drive be away: nothing mounted there.
         self.assertIn('Ok(None)', self.functions[PRESENT])

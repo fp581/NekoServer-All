@@ -322,7 +322,25 @@ fn ask_control(socket: &Path, request: &Value) -> std::result::Result<Value, &'s
         .ok_or("E21")
 }
 
-const MEDIA_FIELDS: [&str; 7] = [
+/// The Drives page's fields (storage.rs checks each one).
+const STORAGE_FIELDS: [&str; 11] = [
+    "disk",
+    "serial",
+    "size_bytes",
+    "how",
+    "confirm",
+    "drive",
+    "kind",
+    "to",
+    "copy",
+    "array",
+    // The move window's tick for a move that backs a kind up on its own drive (1.0.1).
+    "beside_ok",
+];
+// "slot" (the folder a remove names) and "backup" (the music backup's answer) were not
+// passed on before 1.0.1: "Take away" was refused with "Which folder?" and every answer
+// was taken as yes. "drive": the Extra drive a folder is made on (part C).
+const MEDIA_FIELDS: [&str; 10] = [
     "change",
     "kind",
     "path",
@@ -330,6 +348,9 @@ const MEDIA_FIELDS: [&str; 7] = [
     "downloads",
     "target",
     "use",
+    "slot",
+    "backup",
+    "drive",
 ];
 /// The request the control service gets: only the fields it knows, plus who is asking.
 /// `local` is decided here, never taken from the page.
@@ -367,6 +388,13 @@ pub fn control_request(op: &str, body: &Value, who: &Who, token: Option<&str>) -
     // checks each one).
     if op.starts_with("app_media_") {
         for key in MEDIA_FIELDS {
+            if let Some(v) = body.get(key) {
+                request[key] = v.clone();
+            }
+        }
+    }
+    if crate::storage::is_op(op) {
+        for key in STORAGE_FIELDS {
             if let Some(v) = body.get(key) {
                 request[key] = v.clone();
             }
@@ -863,6 +891,16 @@ fn control(
             "media-state" => "app_media_state",
             "media-change" => "app_media_change",
             "media-browse" => "app_media_browse",
+            "storage-state" => "app_storage_state",
+            "storage-look" => "app_storage_look",
+            "drive-use" => "app_drive_use",
+            "drive-release" => "app_drive_release",
+            "data-move" => "app_data_move",
+            "data-move-back" => "app_data_move_back",
+            "data-delete-old" => "app_data_delete_old",
+            "mirror-add" => "app_mirror_add",
+            "data-retry" => "app_data_retry",
+            "data-give-up" => "app_data_give_up",
             "cards-list" => "cards_list",
             "cards-enrol" => "cards_enrol",
             "cards-write" => "cards_write",
@@ -1296,6 +1334,47 @@ mod tests {
                 "path": "/mnt/nas/tv", "how": "in_place", "downloads": false, "target": "library",
                 "use": "in_place", "token": "t"})
         );
+        // A folder taken away (its slot), the music backup's answer, and a folder made on an
+        // Extra drive (1.0.1): each reaches the control service, which checks it.
+        for (body, key, value) in [
+            (
+                json!({"change": "remove", "kind": "tv", "slot": "tv-2", "path": "/mnt/nas/tv"}),
+                "slot",
+                json!("tv-2"),
+            ),
+            (
+                json!({"change": "add", "kind": "music", "path": "/mnt/nas/m", "how": "in_place",
+                "downloads": false, "backup": false}),
+                "backup",
+                json!(false),
+            ),
+            (
+                json!({"change": "make", "kind": "movies", "drive": "d4", "downloads": true}),
+                "drive",
+                json!("d4"),
+            ),
+        ] {
+            let request = control_request("app_media_change", &body, &Who::default(), None);
+            assert_eq!(request[key], value, "{request}");
+        }
+        // The Drives page's fields, for its own requests only; the PIN goes on as for unlock.
+        let drive = json!({"disk": "ata-X_1", "serial": "1", "size_bytes": 9, "how": "erase",
+            "confirm": "9 B 1", "pin": "123456", "kind": "photos", "to": "d3", "copy": "c",
+            "array": "md-md0", "drive": "d3", "path": "/etc", "change": "add"});
+        let request = control_request("app_drive_use", &drive, &Who::default(), Some("t"));
+        assert_eq!(
+            request,
+            json!({"op": "app_drive_use", "local": false, "disk": "ata-X_1", "serial": "1",
+                "size_bytes": 9, "how": "erase", "confirm": "9 B 1", "pin": "123456", "kind": "photos",
+                "to": "d3", "copy": "c", "array": "md-md0", "drive": "d3", "token": "t"})
+        );
+        // The move window's tick for a move that backs a kind up on its own drive goes on
+        // (storage.rs passes it to the job only when it is true).
+        let tick = json!({"kind": "photos", "to": "d3", "beside_ok": true});
+        let request = control_request("app_data_move", &tick, &Who::default(), None);
+        assert_eq!(request["beside_ok"], true, "{request}");
+        let request = control_request("app_media_change", &drive, &Who::default(), None);
+        assert!(request.get("disk").is_none() && request.get("confirm").is_none());
         let request = control_request("app_restart", &body, &Who::default(), None);
         assert_eq!(request, json!({"op": "app_restart", "local": false}));
     }
@@ -1856,6 +1935,31 @@ mod tests {
                 (request["change"].as_str(), request["path"].as_str()),
                 (Some("look"), Some("/mnt"))
             );
+        }
+        // The Drives page's requests (1.0.1 contract §3) reach it by their names.
+        for (path, op) in [
+            ("storage-state", "app_storage_state"),
+            ("storage-look", "app_storage_look"),
+            ("drive-use", "app_drive_use"),
+            ("drive-release", "app_drive_release"),
+            ("data-move", "app_data_move"),
+            ("data-move-back", "app_data_move_back"),
+            ("data-delete-old", "app_data_delete_old"),
+            ("mirror-add", "app_mirror_add"),
+            ("data-retry", "app_data_retry"),
+            ("data-give-up", "app_data_give_up"),
+        ] {
+            let reply = post(
+                &format!("/api/control/{path}"),
+                &local,
+                &here,
+                "X-Neko-Token: t
+",
+                r#"{"kind":"photos","to":"d3"}"#,
+            );
+            let request = seen(&reply);
+            assert_eq!(request["op"], op, "{reply}");
+            assert_eq!(request["to"], "d3", "{reply}");
         }
         assert!(post("/api/control/media-delete", &local, &here, "", "{}").contains("\"E40\""));
         // Coded refusals keep their HTTP status.

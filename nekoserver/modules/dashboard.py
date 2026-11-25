@@ -124,8 +124,11 @@ SPARE_PORTS = range(8788, 8800)
 
 
 def port_free(port):
+    """No program listens on the port. Connections closed a moment ago (TIME_WAIT: the
+    page's, when the dashboard was stopped just before) do not make it look taken (T1-10)."""
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             probe.bind(('127.0.0.1', port))
     except OSError:
         return False
@@ -254,6 +257,11 @@ def socket_proxyd(places=None):
 UPDATES_FOLDER = 'backups/updates'
 
 
+# Every unit that starts with the computer, and the settings flag the units pass.
+INSTALL_MULTI_USER = '[Install]\nWantedBy=multi-user.target\n'
+CONFIG_FLAG = ' --config '
+
+
 def control_units(code, lighting, fans=True, data=None, proxyd=None, settings=None, cards=False):
     """The root control service (fans, lights, and restarting or closing apps from the
     dashboard) and, with lighting, OpenRGB's server and the link to it. The control
@@ -283,7 +291,7 @@ def control_units(code, lighting, fans=True, data=None, proxyd=None, settings=No
         f'ExecStart={binary} control'
         + ('' if lighting else ' --no-lights')
         + ('' if fans else ' --no-fans')
-        + ' --config '
+        + CONFIG_FLAG
         + str(COLLECTOR_SETTINGS)
         + '\n'
         # Whenever it stops (a crash too), every fan goes back to the motherboard.
@@ -306,12 +314,13 @@ def control_units(code, lighting, fans=True, data=None, proxyd=None, settings=No
         # CAP_KILL: closing an app someone opened on the desktop (their own user's process).
         # The computer's own loopback only: the apps answer there; nothing else is reached.
         'CapabilityBoundingSet=CAP_CHOWN CAP_FOWNER CAP_DAC_OVERRIDE CAP_KILL\nRestrictAddressFamilies=AF_UNIX AF_INET\nIPAddressDeny=any\nIPAddressAllow=localhost\n'
-        '[Install]\nWantedBy=multi-user.target\n'
+        + INSTALL_MULTI_USER
     }
     if lighting:
         found.update(lighting_units(proxyd or socket_proxyd() or PROXYD_PLACES[0]))
     if data:
         found[MEDIA_FOLDERS] = media_folders_unit(data, settings)
+        found.update(storage_units(data, settings) if 'storage_jobs' in SHARED else {})
     return found
 
 
@@ -349,6 +358,39 @@ def media_folders_unit(data, settings=None):
     )
 
 
+# The dashboard's Drives page (1.0.1, storage_jobs.py): its jobs run as root in this
+# one-off service, which the control service starts; a job a power cut stopped is undone
+# or finished by the second as the computer starts, before Docker.
+
+
+def storage_units(data, settings=None):
+    """The Drives page's two units: this release's storage_jobs.py, given the settings kept
+    with it and the file setup was run from (both written when a job changes them)."""
+    bundle = Path(data) / 'installer/releases' / ('v' + VERSION)
+    facts = SHARED['storage_jobs']
+    request = Path(facts['folder']) / facts['request']
+    settings = settings if isinstance(settings, (str, Path)) else None
+    plain = settings and not any(c in str(settings) for c in '"\\') and str(settings).isprintable()
+    configs = f'--config {bundle}/config.json' + (
+        CONFIG_FLAG + unit_word(settings) if plain and Path(settings) != bundle / 'config.json' else ''
+    )
+    run = f'ExecStart=/usr/bin/python3 -Es {bundle}/storage_jobs.py'
+    return {
+        facts['unit']: '[Unit]\nDescription=NekoServer change your drives (from the dashboard)\n'
+        + f'RequiresMountsFor={data}\nAfter=docker.service\n'
+        # A copy onto another drive takes as long as the files are big: never cut off.
+        + '[Service]\nType=oneshot\nUMask=0077\nTimeoutStartSec=infinity\n'
+        + f'{run} run {configs} --request {request}\n',
+        facts['resume']: '[Unit]\nDescription=NekoServer finish or undo a drives change a power cut stopped\n'
+        + f'RequiresMountsFor={data}\nAfter=local-fs.target nekoserver-mirror-start.service\n'
+        + 'Before=docker.service\nConditionPathExists='
+        + str(Path(facts['state']) / facts['journal'])
+        + '\n[Service]\nType=oneshot\nUMask=0077\nTimeoutStartSec=30min\n'
+        + f'{run} resume {configs}\n'
+        + INSTALL_MULTI_USER,
+    }
+
+
 def cards_paths(data):
     """With backup cards on (0.52.0), the Backup cards page enrols a card through this
     service: the set's folder on the SSD, and the folders a card is mounted under (a
@@ -370,9 +412,7 @@ def lighting_units(proxyd):
             + '\nStartLimitIntervalSec=0\n[Service]\nType=simple\n'
             f'ExecStart={OPENRGB_BINARY} --server --server-port 6742\n'
             'Environment=QT_QPA_PLATFORM=offscreen HOME=/var/lib/nekoserver-openrgb XDG_CONFIG_HOME=/var/lib/nekoserver-openrgb\nStateDirectory=nekoserver-openrgb\n'
-            'Restart=on-failure\nRestartSec=10\nNoNewPrivileges=yes\nProtectHome=yes\n'
-            + private
-            + '[Install]\nWantedBy=multi-user.target\n'
+            'Restart=on-failure\nRestartSec=10\nNoNewPrivileges=yes\nProtectHome=yes\n' + private + INSTALL_MULTI_USER
         ),
         PROXY_SOCKET: (
             '[Unit]\nDescription=NekoServer lighting link (the socket only the control service may use)\n[Socket]\n'
@@ -407,7 +447,7 @@ def units(data, code, config, port, interval, public=None, control=False):
     return {
         'nekoserver-dashboard-collect.service': '[Unit]\nDescription=NekoServer dashboard collection\n[Service]\nType=oneshot\nRuntimeDirectory=nekoserver-dashboard\nRuntimeDirectoryMode=0755\nRuntimeDirectoryPreserve=yes\nExecStart='
         + collect
-        + ' --config '
+        + CONFIG_FLAG
         + str(config)
         + ' --output /run/nekoserver-dashboard/status.json --state '
         + str(data / 'dashboard-state')
@@ -444,7 +484,7 @@ def units(data, code, config, port, interval, public=None, control=False):
         + '\n'
         # Only the control service's socket: changes are passed on, never made here.
         + ('SupplementaryGroups=' + CONTROL_GROUP + '\n' if control else '')
-        + '[Install]\nWantedBy=multi-user.target\n',
+        + INSTALL_MULTI_USER,
     }
 
 
@@ -494,7 +534,7 @@ def choose_pin(binary, log, ask=getpass.getpass):
         return False
     print(
         '\nChoose a PIN (6 to 8 digits) for the dashboard: it lets you change fans and lights from your phone or tablet,\n'
-        'and change apps: restart or close them, updates, Ask Neko, media folders and backup cards (on every device, the server too).\n'
+        'and change apps: restart or close them, updates, Ask Neko, media folders, drives and backup cards (on every device, the server too).\n'
         'Press Enter to skip: fans and lights then change on the server itself only, and none of those app changes can be made from the dashboard.'
     )
     # In the setup window the PIN and its second entry are one page (hidden, checked to
@@ -610,6 +650,11 @@ def collector_settings(cfg, smart, interval=60):
     acceptance report must match."""
     clean = {k: cfg[k] for k in ('data_mount', 'media_mount', 'external_backup_mount', 'storage')}
     clean.update(placed_on_other_drives(cfg))
+    # Where each kind of files is, with two drives too: the Drives page shows it from here
+    # (storage.rs data_kinds; T1-1). A server with no places of its own keeps the file it had.
+    places = {k: v for k, v in (cfg.get('locations') or {}).items() if isinstance(v, str)}
+    if places:
+        clean['locations'] = places
     clean['media'] = {'services': media_services(cfg)}
     # Whether any media group is on, and each group once one has an answer of its own (a
     # server with none keeps the file it had: "wanted" alone says it all).
@@ -928,6 +973,9 @@ def start_services(definitions, code, control, log, fans=True):
         systemctl('enable', '--now', unit)
     if started:
         start_control(started, log)
+    resume = SHARED.get('storage_jobs', {}).get('resume')
+    if resume in definitions:
+        systemctl('enable', resume)
     systemctl('restart', SERVICE)
     # Fan control switched off: the restart handed every fan back (or the service keeps
     # trying, at full speed meanwhile). Setup says so instead of carrying on. The service

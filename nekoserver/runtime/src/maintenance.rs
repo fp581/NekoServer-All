@@ -4429,7 +4429,8 @@ pub fn run(a: &Args, recover: bool) -> Result<()> {
         // Setup holds this lock too, also while it waits at a question: after half an
         // hour the month's run gives way (it would take the night) and comes back the
         // next night, instead of failing and paging you.
-        match common::shared_lock_wait(&lock, std::time::Duration::from_secs(3 * 3600), SETUP_WAIT)
+        // ... and to a Drives job, an upgrade or a drive move the same way (T1-22).
+        match common::nightly_lock_wait(&lock, std::time::Duration::from_secs(3 * 3600), SETUP_WAIT)
         {
             Ok(held) => held,
             Err(e) if common::postponed(&e) => {
@@ -4580,7 +4581,7 @@ fn both_locks<U, R>(
 /// The backups' shared lock, as the monthly run takes it: setup holding it for half an
 /// hour postpones the job (it is not a failure, and it runs at its next time).
 fn job_lock(data: &Path) -> Result<fs::File> {
-    common::shared_lock_wait(
+    common::nightly_lock_wait(
         &data.join("installer/recovery.lock"),
         Duration::from_secs(3 * 3600),
         SETUP_WAIT,
@@ -9099,7 +9100,7 @@ pub(crate) mod tests {
         let source = include_str!("maintenance.rs");
         let run = &source[source.find(&["pub fn ", "run("].concat()).unwrap()..];
         let run = &run[..run.find("\n}\n").unwrap()];
-        assert!(run.contains("common::shared_lock_wait("));
+        assert!(run.contains("common::nightly_lock_wait("));
         assert!(run.contains("again_next_night(&cfg)"));
         let main = include_str!("main.rs");
         assert!(main.contains("if common::postponed(&e)"));

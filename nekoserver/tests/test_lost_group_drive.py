@@ -187,5 +187,58 @@ class LeftoverTests(unittest.TestCase):
         self.assertTrue((self.folder / 'library/music/song.flac').is_file())
 
 
+class MadeOnlyDriveTests(unittest.TestCase):
+    """T5, review of 02ac9e8: setup's drive check watches a drive that holds only a folder
+    the Media folders page made (drives_watched), so setup's way out for a lost drive must
+    see it too, or every setup run stops at the drive check with no question to give it
+    up. Given up, nothing names it: no "made" entry, no drive under "storage", none in
+    the record, and the drive check passes."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.top = Path(tmp.name)
+        self.by_uuid = self.top / 'by-uuid'
+        self.by_uuid.mkdir()
+        for uuid in ('ssd-1', 'hdd-1'):
+            (self.by_uuid / uuid).touch()
+        self.config = settings(self.top)
+        self.config['storage'].pop('d3')
+        self.config['locations'], self.config['install'] = {}, {}
+        self.config['storage']['d4'] = {'uuid': 'lost-4', 'fstype': 'ext4'}
+        self.config['placement'] = placement.derived(self.config)
+        made = {'path': '/mnt/nekoserver-drives/d4/media/movies', 'use': 'in_place', 'new_files': True, 'made': 'd4'}
+        self.config['placement']['movies']['extra'] = [made]
+
+    def test_the_lost_drive_is_named_by_the_folder_made_on_it(self):
+        found = install_state.missing_group_drives(self.config, self.by_uuid)
+        self.assertEqual(list(found), ['d4'])
+        self.assertIn('Movies and shows', found['d4'])
+        self.assertIn('a folder the Media folders page made', found['d4'])
+        (self.by_uuid / 'lost-4').touch()
+        self.assertEqual(install_state.missing_group_drives(self.config, self.by_uuid), {})
+
+    def test_given_up_nothing_names_it_and_the_drive_check_passes(self):
+        said, chosen = [], {}
+        storage.lost_ahead(self.config, chosen, said.append, str(self.by_uuid) + '/')
+        self.assertEqual(len(said), 1)
+        self.assertTrue(said[0].startswith('The drive for Movies and shows'), said[0])
+        self.assertEqual(chosen['lost']['d4']['apps'], [], 'no app of its own to make again')
+        self.assertNotIn('"d4"', json.dumps(self.config))
+        self.assertNotIn('d4', self.config['storage'])
+        self.assertFalse(self.config['placement']['movies'].get('extra'))
+        self.assertEqual(neko_common.drives_watched(self.config), [])
+        asked = []
+        neko_common.verify_storage(self.config, ask=lambda folder, cfg, args: asked.append(args) or (0, ''))
+        self.assertEqual(asked[0][asked[0].index('--drives') + 1], 'data_ssd,media_hdd')
+        # ... and the record setup writes keeps no drive the run gave up (T1-20's given_up).
+        record = self.top / 'places.json'
+        before = json.loads(json.dumps(self.config))
+        before['storage']['d4'] = {'uuid': 'lost-4', 'fstype': 'ext4'}
+        neko_common.write_places(before, record)
+        neko_common.write_places(self.config, record, keep_drives=True, given_up={'d4'})
+        self.assertNotIn('d4', json.loads(record.read_text())['storage'])
+
+
 if __name__ == '__main__':
     unittest.main()

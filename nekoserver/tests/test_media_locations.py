@@ -29,7 +29,7 @@ import media_locations  # noqa: E402
 import source_import  # noqa: E402
 
 # One stand-in for findmnt, mount, umount, systemctl and docker: what it is called as
-# decides what it does. State: {"mounts": {folder: [source, type]}, "bound": {point:
+# decides what it does. State: {"mounts": {folder: [source, type, uuid?]}, "bound": {point:
 # source}, "busy": [points an app holds open]}; every call is noted in calls.log.
 STAND_IN = r'''#!/usr/bin/env python3
 import json, os, re, sys
@@ -57,7 +57,8 @@ if me == 'findmnt':
         point = path
     else:
         sys.exit(1)
-    said = {'TARGET': point, 'SOURCE': mounts[point][0], 'FSTYPE': mounts[point][1]}
+    # A mount's UUID is its third field, when the test gives one (neko_common.drive_away).
+    said = {'TARGET': point, 'SOURCE': mounts[point][0], 'FSTYPE': mounts[point][1], 'UUID': (mounts[point] + [''])[2]}
     print(' '.join(said[c] for c in columns.split(',')))
 elif me == 'mount':
     point = args[-1]
@@ -374,6 +375,7 @@ class MediaFoldersTests(unittest.TestCase):
                     'reason': None,
                     'backup': None,
                     'backup_said': None,
+                    'made': None,
                 }
             ],
         )
@@ -961,6 +963,234 @@ class MediaFoldersTests(unittest.TestCase):
         self.assertFalse((self.pc.control / 'progress.json').exists(), 'gone once the copy ended')
         self.assertNotIn(existing_page.COPIES, self.pc.settings(), 'copied: off the list')
         self.assertNotIn(existing_media.BEGIN, self.pc.fstab.read_text(), 'a copy connects nothing')
+
+
+class DriveFolderTests(unittest.TestCase):
+    """Part C (1.0.1): "a folder on this Extra drive for films/shows/music". NekoServer
+    makes <drive>/media/<kind>, the apps' own, and connects it as a folder used where it
+    is, recorded as NekoServer's folder on that drive."""
+
+    def setUp(self):
+        import neko_common
+
+        self.pc = PC(self)
+        self.drives = self.pc.top / 'drives'
+        self.d4 = self.drives / 'd4'
+        self.d4.mkdir(parents=True)
+        for patch in (
+            mock.patch.object(neko_common, 'EXTRA_MOUNTS', self.drives),
+            mock.patch.object(existing_media, 'EXTRA_MOUNTS', self.drives),
+        ):
+            patch.start()
+            self.addCleanup(patch.stop)
+        self.pc.state['mounts'][str(self.d4)] = ['/dev/sdd1', 'ext4', 'd4-uuid']
+        self.pc.save_state()
+        with self.pc.fstab.open('a') as fstab:
+            fstab.write(f'UUID=d4-uuid {self.d4} ext4 defaults,nofail 0 2\n')
+        self.pc.config['storage']['d4'] = {'uuid': 'd4-uuid', 'fstype': 'ext4'}
+        for path in (self.pc.kept, self.pc.own):
+            path.write_text(json.dumps(self.pc.config))
+
+    def make(self, kind='movies', drive='d4', downloads=True, **more):
+        return self.pc.ask(change='make', kind=kind, drive=drive, downloads=downloads, **more)
+
+    def kind(self, answer, kind='movies'):
+        return next(k for k in answer['kinds'] if k['kind'] == kind)
+
+    def uid_gid(self):
+        return self.pc.config['media']['uid'], self.pc.config['media']['gid']
+
+    def test_the_folder_is_made_for_the_apps_and_connected_as_nekoservers_own(self):
+        look = self.pc.ask(change='look')
+        offered = self.kind(look)['drives']
+        self.assertEqual(
+            offered, [{'drive': 'd4', 'words': 'Extra drive d4', 'path': str(self.d4 / 'media' / 'movies')}]
+        )
+        answer = self.make()
+        self.assertEqual(answer['state'], 'done', answer)
+        made = self.d4 / 'media' / 'movies'
+        self.assertIn(f'A folder for your films on Extra drive d4 is ready: {made}', answer['message'])
+        self.assertIn('New films are saved there from now on', answer['message'])
+        self.assertEqual(stat.S_IMODE((self.d4 / 'media').stat().st_mode), 0o755)
+        seen = made.stat()
+        self.assertEqual((stat.S_IMODE(seen.st_mode), seen.st_uid, seen.st_gid), (0o2775, *self.uid_gid()))
+        extra = self.pc.settings()['placement']['movies']['extra']
+        self.assertEqual(
+            [(e['path'], e['use'], e['new_files'], e['made']) for e in extra], [(str(made), 'in_place', True, 'd4')]
+        )
+        # Connected as any folder used where it is: bound into the library, the apps told.
+        self.assertIn(f'{made} {self.pc.point()} none bind,rw,nofail', self.pc.fstab.read_text())
+        self.assertEqual(
+            self.pc.told, [(app, '/data/existing/movies') for app in ('jellyfin', 'root folders', 'seerr')]
+        )
+        films = self.kind(answer)
+        self.assertEqual(films['folders'][0]['made'], 'd4')
+        self.assertEqual(films['drives'], [], 'films have their folder on d4 now')
+        self.assertEqual(self.kind(answer, 'tv')['drives'][0]['path'], str(self.d4 / 'media' / 'tv'))
+        # Known to the Drives page: "Stop using this drive" waits for it.
+        import storage_jobs
+
+        said = storage_jobs.release_problem(self.pc.settings(), 'd4', [])
+        self.assertIn('Take it out on the Media folders page first', said)
+        # Asked again: said, nothing changed.
+        before = self.pc.settings()
+        again = self.make()
+        self.assertEqual(again['state'], 'refused')
+        self.assertIn('already', again['message'])
+        self.assertEqual(self.pc.settings(), before)
+
+    def test_a_folder_taken_away_and_made_again_is_used_as_it_is(self):
+        self.make(downloads=False)
+        made = self.d4 / 'media' / 'movies'
+        (made / 'Alien (1979)').mkdir()
+        removed = self.pc.ask(change='remove', kind='movies', slot='movies', path=str(made))
+        self.assertEqual(removed['state'], 'done', removed)
+        self.assertTrue((made / 'Alien (1979)').is_dir(), 'its files are never touched')
+        again = self.make(downloads=False)
+        self.assertEqual(again['state'], 'done', again)
+        self.assertTrue((made / 'Alien (1979)').is_dir())
+        # It has files now: connected as the person's, never counted as NekoServer's (T3-101-3).
+        self.assertNotIn('made', self.pc.settings()['placement']['movies']['extra'][0])
+
+    def test_a_folder_of_the_persons_already_there_is_connected_as_theirs_not_as_made(self):
+        # T3-101-3: a taken-over drive's own media/movies, full of the person's films, was
+        # saved as NekoServer's ("Made by NekoServer"), so later jobs could count it as ours.
+        made = self.d4 / 'media' / 'movies'
+        (made / 'Alien (1979)').mkdir(parents=True)
+        made.chmod(0o750)
+        answer = self.make(downloads=False)
+        self.assertEqual(answer['state'], 'done', answer)
+        self.assertIn(f'Your films in {made} are connected, used where they are.', answer['message'])
+        self.assertIn(media_locations.THEIRS.format(path=made), answer['notes'])
+        self.assertNotIn('made', self.pc.settings()['placement']['movies']['extra'][0])
+        self.assertIsNone(self.kind(answer)['folders'][0]['made'])
+        self.assertEqual(stat.S_IMODE(made.stat().st_mode), 0o750, "the person's folder keeps its modes")
+
+    def test_nekoservers_own_folders_on_an_extra_drive_are_never_media_folders(self):
+        # T3-101-2: a drive the Drives page moved photos to (or left an old copy on) was
+        # accepted as a films folder, so the apps listed NekoServer's own files twice.
+        self.pc.config['locations'] = {'photos': 'd4'}
+        for path in (self.pc.kept, self.pc.own):
+            path.write_text(json.dumps(self.pc.config))
+        photos = self.d4 / 'photos' / 'immich-library'
+        (photos / 'upload').mkdir(parents=True)
+        old = self.d4 / 'nekoserver-old-music-0123456789abcdef'
+        (old / 'Abba').mkdir(parents=True)
+        (self.d4 / 'films').mkdir()
+        before = self.pc.settings()
+        for path, said in (
+            (self.d4, f"{self.d4} holds NekoServer's own folders ({photos}: your photos)"),
+            (self.d4 / 'photos', f"{self.d4 / 'photos'} holds NekoServer's own folders ({photos}: your photos)"),
+            (photos, f"{photos} is inside NekoServer's own folders ({photos})"),
+            (photos / 'upload', f"{photos / 'upload'} is inside NekoServer's own folders ({photos})"),
+            (old / 'Abba', f"{old / 'Abba'} is inside NekoServer's own folders ({old})"),
+        ):
+            answer = self.pc.ask(change='add', kind='movies', path=str(path), how='in_place', downloads=False)
+            self.assertEqual(answer['state'], 'refused', path)
+            self.assertIn(said, answer['message'])
+            self.assertEqual(self.pc.settings(), before, path)
+        # An old copy alone is said as one.
+        self.pc.config['locations'] = {}
+        for path in (self.pc.kept, self.pc.own):
+            path.write_text(json.dumps(self.pc.config))
+        answer = self.pc.ask(change='add', kind='movies', path=str(self.d4), how='in_place', downloads=False)
+        self.assertIn(f"({old}: an old copy the Drives page keeps after a move)", answer['message'])
+        # A folder of the person's beside them, and a folder made on the drive, are fine.
+        self.assertEqual(
+            self.pc.ask(change='add', kind='movies', path=str(self.d4 / 'films'), how='in_place', downloads=False)[
+                'state'
+            ],
+            'done',
+        )
+        self.assertEqual(self.make('tv', downloads=False)['state'], 'done')
+
+    def test_music_there_is_asked_about_the_backup_as_on_a_nas_and_yes_unless_no(self):
+        look = self.pc.ask(change='look')
+        self.assertEqual(self.kind(look, 'music')['backup_question'], existing_page.backup_question())
+        yes = self.make('music', downloads=False)
+        self.assertEqual(yes['state'], 'done', yes)
+        entry = self.pc.settings()['placement']['music']['extra'][0]
+        self.assertIs(entry['backup'], True)
+        self.assertIn('Your music: copied each night with the music backup.', yes['notes'])
+        existing = str(self.pc.ssd / 'library' / 'existing' / 'music')
+        self.assertEqual(self.pc.jobs[-1], [{'slot': 'music', 'path': existing}])
+        import backup_plan
+
+        rows = []
+        backup_plan.music_row(self.pc.settings(), {'music': '03:00'}, 'media', lambda *a, **k: rows.append(a[1]))
+        self.assertEqual(rows, ['Your music (the library and your own music folder on Extra drive d4)'])
+        self.pc.ask(change='remove', kind='music', slot='music', path=entry['path'])
+        no = self.make('music', downloads=False, backup=False)
+        self.assertIs(self.pc.settings()['placement']['music']['extra'][0]['backup'], False)
+        self.assertEqual(self.kind(no, 'music')['folders'][0]['backup_said'], 'not backed up by NekoServer.')
+        # Films are never asked: a backup answer for them is not kept.
+        films = self.make(downloads=False, backup=True)
+        self.assertEqual(films['state'], 'done', films)
+        self.assertNotIn('backup', self.pc.settings()['placement']['movies']['extra'][0])
+
+    def test_new_music_is_saved_there_not_are(self):
+        # T4-101-3's wording, in the message of a folder made for music with downloads.
+        answer = self.make('music', downloads=True)
+        self.assertEqual(answer['state'], 'done', answer)
+        self.assertIn('New music is saved there from now on', answer['message'])
+        made = self.d4 / 'media' / 'music'
+        (made / 'a.flac').write_text('song')
+        self.pc.ask(change='remove', kind='music', slot='music', path=str(made))
+        theirs = self.make('music', downloads=False)
+        self.assertIn(f'Your music in {made} is connected, used where it is.', theirs['message'])
+
+    def test_a_folder_on_d4_with_another_disk_in_its_place_is_refused(self):
+        # T1-18 (review of cb25447): drive_away's "other" covered for part C too.
+        answer = self.make('music', downloads=True)
+        self.assertEqual(answer['state'], 'done', answer)
+        made = self.d4 / 'media' / 'music'
+        self.pc.ask(change='remove', kind='music', slot='music', path=str(made))
+        before = self.pc.settings()
+        self.pc.state['mounts'][str(self.d4)] = ['/dev/sde1', 'ext4', 'another-uuid']
+        self.pc.save_state()
+        other = self.make('music', downloads=False)
+        self.assertEqual(other['state'], 'refused', other)
+        self.assertIn(f'{made} is on Extra drive d4, which is not connected now', other['message'])
+        self.assertEqual(self.pc.settings(), before)
+
+    def test_a_drive_that_is_not_an_extra_drive_or_not_there_is_refused_and_nothing_is_made(self):
+        before = self.pc.settings()
+        for drive in ('d9', 'media'):
+            answer = self.make(drive=drive)
+            self.assertEqual(answer['state'], 'refused', drive)
+            self.assertIn(f'{drive} is not an Extra drive of this server', answer['message'])
+        del self.pc.state['mounts'][str(self.d4)]
+        self.pc.save_state()
+        away = self.make()
+        self.assertEqual(away['state'], 'refused')
+        self.assertIn('Extra drive d4 is not connected now', away['message'])
+        self.assertEqual(self.kind(away)['drives'], [], 'not offered while it is away')
+        self.assertFalse((self.d4 / 'media').exists())
+        self.assertEqual(self.pc.settings(), before)
+        # A link where the folder would be is not followed.
+        self.pc.state['mounts'][str(self.d4)] = ['/dev/sdd1', 'ext4', 'd4-uuid']
+        self.pc.save_state()
+        (self.d4 / 'media').symlink_to(self.pc.nas)
+        linked = self.make()
+        self.assertEqual(linked['state'], 'refused')
+        self.assertIn('is not a folder NekoServer can make', linked['message'])
+        self.assertFalse((self.pc.nas / 'movies').exists())
+        self.assertEqual(self.pc.settings(), before)
+
+    def test_a_request_with_an_odd_drive_or_answer_is_refused(self):
+        base = {'change': 'make', 'id': '0123456789abcdef', 'kind': 'music'}
+        for raw in (
+            {'drive': '../d4', 'downloads': True},
+            {'drive': 'D4', 'downloads': True},
+            {'downloads': True},
+            {'drive': 'd4'},
+            {'drive': 'd4', 'downloads': 'yes'},
+            {'drive': 'd4', 'downloads': True, 'backup': 'no'},
+        ):
+            with self.subTest(raw=raw), self.assertRaises(media_locations.Refusal):
+                media_locations.checked_request({**base, **raw})
+        asked = media_locations.checked_request({**base, 'drive': 'd4', 'downloads': False, 'backup': False})
+        self.assertEqual(asked, {**base, 'drive': 'd4', 'downloads': False, 'backup': False})
 
 
 if __name__ == '__main__':

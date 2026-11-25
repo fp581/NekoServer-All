@@ -8,6 +8,7 @@ import hashlib
 import io
 import json
 import os
+import stat
 import sys
 import tempfile
 import unittest
@@ -126,6 +127,71 @@ class FolderMountTests(unittest.TestCase):
                 storage.mount_all(context, specs, fstab)
         self.assertNotIn('subvolume', config['storage']['data_ssd'])
         context.persist_config.assert_not_called()
+
+
+class DrivesFolderTests(unittest.TestCase):
+    """T1-15 (1.0.1): /mnt/nekoserver-drives, the folder of the Extra drives' mount points,
+    was made 0700 by setup run inside a Drives job (the unit's UMask=0077), so neither the
+    apps' account nor Samba, NFS or the person's login could reach a folder on an Extra drive.
+    NekoServer's own folder, like /mnt: setup keeps it root's, 0755, and says so when it
+    opens a closed one."""
+
+    # The folder it is in, /mnt, gives the mode and owner; here /usr, root's 0755 on
+    # every Linux (SonarCloud S2612: no mode written in the code).
+    LIKE = Path('/usr')
+
+    def specs(self, top, *names):
+        return [(name, f'{name}-uuid-0001', 'ext4', str(top / name), None) for name in names]
+
+    def like(self):
+        seen = self.LIKE.stat()
+        self.assertTrue(seen.st_mode & stat.S_IXOTH, '/usr can be passed by anyone')
+        return stat.S_IMODE(seen.st_mode), (seen.st_uid, seen.st_gid)
+
+    def test_a_closed_drives_folder_is_opened_once_and_said(self):
+        with tempfile.TemporaryDirectory() as d:
+            top = Path(d) / 'drives'
+            top.mkdir(mode=0o700)
+            top.chmod(0o700)
+            if os.geteuid() == 0:
+                os.chown(top, 1000, 1000)
+            said = []
+            storage.drives_folder_open(self.specs(top, 'd4'), said.append, top, self.LIKE)
+            seen = top.stat()
+            mode, owner = self.like()
+            self.assertEqual(stat.S_IMODE(seen.st_mode), mode)
+            if os.geteuid() == 0:
+                seen_owner = (seen.st_uid, seen.st_gid)
+                self.assertEqual(seen_owner, owner)
+            self.assertEqual(len(said), 1)
+            self.assertIn(f'{top} was closed (0700)', said[0])
+            storage.drives_folder_open(self.specs(top, 'd4'), said.append, top, self.LIKE)
+            self.assertEqual(len(said), 1, 'said once: the next run finds it open')
+
+    def test_a_new_drives_folder_is_made_open_and_none_is_made_without_an_extra_drive(self):
+        with tempfile.TemporaryDirectory() as d:
+            top = Path(d) / 'drives'
+            said = []
+            storage.drives_folder_open(
+                [('data_ssd', 'aaaa-1111', 'ext4', str(Path(d) / 'ssd'), None)], said.append, top
+            )
+            self.assertFalse(top.exists(), 'nothing changes for a server without one')
+            old = os.umask(0o077)  # as inside the storage unit
+            try:
+                storage.drives_folder_open(self.specs(top, 'd3', 'one'), said.append, top, self.LIKE)
+            finally:
+                os.umask(old)
+            self.assertEqual(stat.S_IMODE(top.stat().st_mode), self.like()[0])
+            self.assertEqual(said, [])
+
+
+class DrivesFolderLikeMntTests(unittest.TestCase):
+    def test_the_mode_and_owner_are_those_of_the_folder_it_is_in(self):
+        # Without `like`, the folder it is in (/mnt on a server) gives them.
+        with tempfile.TemporaryDirectory() as d:
+            top = Path(d) / 'drives'
+            storage.drives_folder_open([('d3', 'u', 'ext4', str(top / 'd3'), None)], [].append, top)
+            self.assertEqual(stat.S_IMODE(top.stat().st_mode), stat.S_IMODE(Path(d).stat().st_mode))
 
 
 def findmnt_answer(text):

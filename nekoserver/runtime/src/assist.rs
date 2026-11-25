@@ -1030,7 +1030,7 @@ pub fn job_blocked(operation_lock: &Path, active: &dyn Fn(&str) -> bool) -> Opti
 }
 
 /// Another program holds this lock file now (tried without waiting, let go at once).
-fn held(path: &Path) -> bool {
+pub(crate) fn held(path: &Path) -> bool {
     use std::os::unix::io::AsRawFd;
     let Ok(file) = std::fs::File::open(path) else {
         return false;

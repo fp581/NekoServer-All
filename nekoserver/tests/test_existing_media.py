@@ -257,6 +257,10 @@ class CheckTests(unittest.TestCase):
         self.pc.mounts[str(self.pc.nas)] = ('/dev/sdd1', 'ext4')
         found, _ = self.pc.check(new_files=True, said={'write': 'write Permission denied'})
         self.assertIn("add it to the folder's group", found['new_files']['reason'])
+        # A closed folder of the person's on a drive of this PC (an Extra drive taken over
+        # with its own modes, say) is the person's to open: their words (T5, T1-15).
+        refused = self.refusal(said={'read': 'read Permission denied'})
+        self.assertIn(existing_media.FIX_LOCAL.format(uid=1000, gid=1000), str(refused))
 
     def test_the_systems_and_nekoservers_own_folders_are_never_media(self):
         for folder, code in (

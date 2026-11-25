@@ -84,6 +84,14 @@ class Context:
             atomic_json(path, self.config if now is None else merged(self.saved, self.config, now))
             if owner is not None and os.geteuid() == 0:
                 os.chown(path, *owner, follow_symlinks=False)
+        from neko_common import extra_drives, read_places, write_places
+
+        # Once the Drives page has recorded the places, a change setup makes to them is
+        # recorded too; a server that never used it gets no record (T1-17).
+        if read_places() is not None:
+            # A drive this run had and took out (given up) leaves the record too.
+            gone = set(extra_drives(self.saved)) - set(extra_drives(self.config))
+            write_places(self.config, keep_drives=True, given_up=gone)
         self.saved = copy.deepcopy(self.config)
 
 
@@ -847,8 +855,18 @@ def after_the_steps(args, config, states, log):
         settle_upgrade(config, log)
 
 
+def settings_for_run(path, apply, out=print):
+    """The settings file, with the places the Drives page recorded when the file is older
+    than them (T1-17): said in one line, and saved into the file in a run with --apply."""
+    from neko_common import take_places
+
+    config = read_json(Path(path))
+    take_places(config, [path] if apply else (), out=out)
+    return config
+
+
 def _execute(args, root=ROOT):
-    config = read_json(Path(args.config))
+    config = settings_for_run(args.config, args.apply)
     as_read = copy.deepcopy(config)  # what the run changes is saved on the file as it is then
     validate_config(config)
     # A settings file keeps the profiles it was made with: the steps a newer release added

@@ -228,6 +228,10 @@ pub fn run(a: &Args) -> Result<()> {
     let deadline = Instant::now() + Duration::from_secs(600);
     let mut recovering = false;
     let mut told = false;
+    let mut missed = vec![];
+    // The folders mounted again (a drive, the binds on it): the apps running on them still
+    // see the dead mount the drive left behind.
+    let mut back = vec![];
     loop {
         let mut waiting = false;
         for (path, uuid, fstype) in &watched {
@@ -246,6 +250,8 @@ pub fn run(a: &Args) -> Result<()> {
                 }
                 Step::Remount { release } => {
                     remount(&shown, uuid, fstype, release)?;
+                    back.push(path.clone());
+                    missed.extend(binds_back(path, &mut back));
                     recovering = true;
                 }
             }
@@ -259,13 +265,14 @@ pub fn run(a: &Args) -> Result<()> {
         }
         thread::sleep(Duration::from_secs(5));
     }
-    let remounted = bring_back_placed(&cfg)?;
+    let remounted = bring_back_placed(&cfg, &mut missed, &mut back)?;
     if !recovering && !remounted {
         // A drive of a group's own came back mounted by systemd, or this is an ordinary
         // start: an app Docker could not start while its drive was away starts now.
-        start_failed_apps("Drive return");
+        restart_apps_on("Drive return", &back, &missed);
+        start_failed_apps("Drive return", &missed);
         crate::shared_folders::check(&cfg);
-        return Ok(());
+        return left_out(&missed);
     }
     // A drive that "returns" while setup runs is setup's doing (a replaced HDD given its
     // fstab line, say): setup starts Docker, the gateway and the rest itself, with their
@@ -286,10 +293,21 @@ pub fn run(a: &Args) -> Result<()> {
         return Ok(());
     }
     let paths: Vec<PathBuf> = drives.into_iter().map(|(p, _, _)| p).collect();
-    start_again(&cfgpath, &paths[0], &paths[1], "Drive return")?;
-    start_failed_apps("Drive return");
-    crate::shared_folders::check(&cfg);
-    Ok(())
+    let started = start_again(&cfgpath, &paths[0], &paths[1], "Drive return");
+    every_app_tried(started, &missed, || {
+        restart_apps_on("Drive return", &back, &missed);
+        start_failed_apps("Drive return", &missed);
+        crate::shared_folders::check(&cfg);
+    })
+}
+
+/// The apps are started again whatever failed before them: a gateway or Samba that did
+/// not start (T1-13: the gateway's address had changed, and none of the 7 apps on the
+/// returned drive came back) or a bind that did not mount. Then what failed is said, the
+/// services' failure first.
+fn every_app_tried(started: Result<()>, missed: &[String], apps: impl FnOnce()) -> Result<()> {
+    apps();
+    started.and(left_out(missed))
 }
 
 /// The mounts to look at, in order: with one drive for both the apps and the media
@@ -345,14 +363,105 @@ fn remount(shown: &str, uuid: &str, fstype: &str, release: bool) -> Result<()> {
     mount_again(shown, uuid, fstype)
 }
 
+/// The bind mounts in /etc/fstab that sit on the drive mounted at `folder`: their source
+/// is there, or they wait for it (x-systemd.requires-mounts-for). These are the moved
+/// kinds' folders (backups, photos/archive), the apps installed on that drive and the
+/// person's own folders there. Parents before the folders inside them.
+fn binds_on(fstab: &str, folder: &Path) -> Vec<PathBuf> {
+    let on_it = |field: &str| Path::new(&common::mount_table_name(field)).starts_with(folder);
+    let mut targets: Vec<PathBuf> = fstab
+        .lines()
+        .filter(|line| !line.trim_start().starts_with('#'))
+        .filter_map(|line| {
+            let fields: Vec<&str> = line.split_whitespace().collect();
+            let options: Vec<&str> = fields.get(3)?.split(',').collect();
+            let waits = options.iter().any(|o| {
+                o.strip_prefix("x-systemd.requires-mounts-for=")
+                    .is_some_and(on_it)
+            });
+            let target = PathBuf::from(common::mount_table_name(fields[1]));
+            (options.contains(&"bind") && (waits || on_it(fields[0])) && target != folder)
+                .then_some(target)
+        })
+        .collect();
+    targets.sort_by_key(|t| (t.components().count(), t.clone()));
+    targets.dedup();
+    targets
+}
+
+/// Each bind on the drive at `folder` mounted again (a dead one left behind released
+/// first): the drive's own mount does not bring them back, and until they are, a backup
+/// writes into the empty, immutable folder under them and fails (T1-13). Every one is
+/// tried; returns what did not come back, and adds what it mounted again to `back`.
+fn bring_back_binds(
+    binds: &[PathBuf],
+    step: &dyn Fn(&Path) -> Result<Step>,
+    mount: &dyn Fn(&str, bool) -> Result<()>,
+    back: &mut Vec<PathBuf>,
+) -> Vec<String> {
+    let mut missed = vec![];
+    for target in binds {
+        let shown = target.to_string_lossy();
+        let done = match step(target) {
+            Ok(Step::Remount { release }) => mount(&shown, release).map(|()| true),
+            Ok(_) => Ok(false),
+            Err(e) => Err(e),
+        };
+        match done {
+            Ok(true) => back.push(target.clone()),
+            Ok(false) => {}
+            Err(e) => {
+                println!("Drive return: {shown} did not come back ({e})");
+                missed.push(shown.into_owned());
+            }
+        }
+    }
+    missed
+}
+
+/// bring_back_binds with the system's own fstab, findmnt and systemctl.
+fn binds_back(folder: &Path, back: &mut Vec<PathBuf>) -> Vec<String> {
+    let fstab = std::fs::read_to_string("/etc/fstab").unwrap_or_default();
+    bring_back_binds(
+        &binds_on(&fstab, folder),
+        &|target| step_for(target, true),
+        &|target, release| {
+            if release {
+                run_ok(&["umount", "-l", target], 60)?;
+            }
+            let unit = run_ok(&["systemd-escape", "--path", "--suffix=mount", target], 10)?;
+            run_ok(&["systemctl", "start", unit.trim()], 120)?;
+            println!("Drive return: mounted {target} again");
+            Ok(())
+        },
+        back,
+    )
+}
+
+/// What did not come back, as this run's failure (said after everything else was started).
+fn left_out(missed: &[String]) -> Result<()> {
+    if missed.is_empty() {
+        return Ok(());
+    }
+    Err(Error::new(&format!(
+        "not everything came back with its drive: {} (journalctl -u nekoserver-drive-return)",
+        missed.join(", ")
+    )))
+}
+
 /// The drives beyond the SSD and the HDD that something is placed on (0.50.0: a
 /// group's files or apps on a drive of its own) are never waited for: one that is away
 /// keeps only the apps with files there stopped (their Compose files never let Docker
 /// make a missing folder), and the others start. One that is connected again is mounted
-/// again. True when one was.
-fn bring_back_placed(cfg: &serde_json::Value) -> Result<bool> {
+/// again, with the binds on it. True when one was; `missed`: what did not come back (one
+/// drive or bind failing never keeps the others, or the apps, down).
+fn bring_back_placed(
+    cfg: &serde_json::Value,
+    missed: &mut Vec<String>,
+    back: &mut Vec<PathBuf>,
+) -> Result<bool> {
     let mut remounted = false;
-    for name in common::drives_in_use(cfg) {
+    for name in common::drives_watched(cfg) {
         let record = &cfg["storage"][name.as_str()];
         let uuid = record["uuid"].as_str().unwrap_or("");
         let Some(folder) = common::drive_folder(cfg, &name).filter(|_| plain_uuid(uuid)) else {
@@ -360,13 +469,24 @@ fn bring_back_placed(cfg: &serde_json::Value) -> Result<bool> {
         };
         let shown = folder.to_string_lossy().into_owned();
         match step_for(&folder, connected(common::nfs_export(record), uuid))? {
-            Step::Nothing => {}
+            // Mounted by systemd when it was plugged in: its binds may still be down.
+            Step::Nothing => missed.extend(binds_back(&folder, back)),
             Step::Wait => println!(
                 "Drive return: the drive for {shown} is not connected; the apps with files there stay stopped until it is back, the others run"
             ),
             Step::Remount { release } => {
-                remount(&shown, uuid, record["fstype"].as_str().unwrap_or(""), release)?;
-                remounted = true;
+                let fstype = record["fstype"].as_str().unwrap_or("");
+                match remount(&shown, uuid, fstype, release) {
+                    Ok(()) => {
+                        back.push(folder.clone());
+                        missed.extend(binds_back(&folder, back));
+                        remounted = true;
+                    }
+                    Err(e) => {
+                        println!("Drive return: the drive for {shown} did not mount again ({e}); the apps with files there stay stopped");
+                        missed.push(shown);
+                    }
+                }
             }
         }
     }
@@ -383,41 +503,20 @@ fn plain_uuid(uuid: &str) -> bool {
 /// drive was away; their Compose files never let Docker make it) are started now. Docker
 /// tries such an app only once, when it starts, and `unless-stopped` does not try again.
 /// An app a person or a job stopped is never started here (Docker keeps no start error
-/// for it); one whose drive is still away fails again and is said.
-fn start_failed_apps(who: &str) {
+/// for it); one whose drive is still away fails again and is said. One with a folder on
+/// a bind that did not come back (`missed`) stays stopped: Docker would start it on the
+/// empty folder under the bind, and Jellyfin or the Arr apps would then drop the films
+/// they no longer see (T5, review of T1-13).
+fn start_failed_apps(who: &str, missed: &[String]) {
     if common::setup_running() {
         return; // setup starts the apps itself
     }
-    let listed = run_ok(
-        &[
-            "docker",
-            "ps",
-            "-a",
-            "-q",
-            "--filter",
-            "label=com.docker.compose.project",
-            "--filter",
-            "status=exited",
-            "--filter",
-            "status=created",
-        ],
-        30,
-    );
-    let ids: Vec<String> = listed
-        .unwrap_or_default()
-        .split_whitespace()
-        .map(str::to_string)
-        .collect();
-    if ids.is_empty() {
-        return; // none stopped, or Docker is not running
-    }
-    let mut inspect = vec!["docker", "inspect"];
-    inspect.extend(ids.iter().map(String::as_str));
-    let inspected = run_ok(&inspect, 30)
-        .ok()
-        .and_then(|text| serde_json::from_str(&text).ok())
-        .unwrap_or_default();
+    let inspected = compose_containers(&["status=exited", "status=created"]);
     for (id, name) in failed_to_start(&inspected) {
+        if let Some(bind) = held_by_missed_bind(&inspected, &id, missed) {
+            println!("{who}: {name} stays stopped: {bind} did not come back");
+            continue;
+        }
         match run_ok(&["docker", "start", &id], 120) {
             Ok(_) => println!(
                 "{who}: started {name} again (Docker could not start it while its drive was away)"
@@ -427,6 +526,111 @@ fn start_failed_apps(who: &str) {
             }
         }
     }
+}
+
+/// `docker inspect` of the Compose containers with the status `filters` (each
+/// "status=..."), as JSON; empty when there are none or Docker is not running.
+fn compose_containers(filters: &[&str]) -> serde_json::Value {
+    let mut ps = vec![
+        "docker",
+        "ps",
+        "-a",
+        "-q",
+        "--filter",
+        "label=com.docker.compose.project",
+    ];
+    for status in filters {
+        ps.extend(["--filter", status]);
+    }
+    let ids: Vec<String> = run_ok(&ps, 30)
+        .unwrap_or_default()
+        .split_whitespace()
+        .map(str::to_string)
+        .collect();
+    if ids.is_empty() {
+        return serde_json::Value::Null;
+    }
+    let mut inspect = vec!["docker", "inspect"];
+    inspect.extend(ids.iter().map(String::as_str));
+    run_ok(&inspect, 30)
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default()
+}
+
+/// T1-19: a drive pulled and plugged in again while the server runs is mounted again with
+/// its binds, but the apps that kept running saw only the dead mount it left behind
+/// (Jellyfin "/data/movies: Input/output error", Immich 404/500) until a docker restart.
+/// Each running NekoServer app with a folder on one that came back (`back`) restarts, and
+/// only those; one also on a bind that did not come back (`missed`) is left as it is:
+/// started again it would see the empty folder under the bind. Each is said.
+fn restart_apps_on(who: &str, back: &[PathBuf], missed: &[String]) {
+    if back.is_empty() || common::setup_running() {
+        return;
+    }
+    let inspected = compose_containers(&["status=running"]);
+    for (id, name) in on_returned(&inspected, back) {
+        if let Some(bind) = held_by_missed_bind(&inspected, &id, missed) {
+            println!("{who}: {name} is left as it is: {bind} did not come back");
+            continue;
+        }
+        match run_ok(&["docker", "restart", &id], 180) {
+            Ok(_) => println!("{who}: restarted {name}: its files are on a drive that came back"),
+            Err(e) => println!("{who}: {name} did not restart ({e})"),
+        }
+    }
+}
+
+/// From `docker inspect`: (id, name) of each running NekoServer app (Compose project
+/// neko-...) with a folder on one of `back`, or holding one.
+fn on_returned(inspected: &serde_json::Value, back: &[PathBuf]) -> Vec<(String, String)> {
+    let text = |v: &serde_json::Value| v.as_str().unwrap_or("").to_string();
+    inspected
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|c| {
+            text(&c["Config"]["Labels"]["com.docker.compose.project"]).starts_with("neko-")
+                && c["State"]["Running"] == true
+                && back.iter().any(|folder| shares_a_folder(c, folder))
+        })
+        .map(|c| {
+            (
+                text(&c["Id"]),
+                text(&c["Name"]).trim_start_matches('/').to_string(),
+            )
+        })
+        .collect()
+}
+
+/// The container (from `docker inspect`) has a folder on `folder`, or inside it, or
+/// holding it.
+fn shares_a_folder(container: &serde_json::Value, folder: &Path) -> bool {
+    container["Mounts"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|m| m["Source"].as_str())
+        .map(Path::new)
+        .any(|source| source.starts_with(folder) || folder.starts_with(source))
+}
+
+/// The bind that did not come back that the container `id` (from `docker inspect`) has a
+/// folder on, or inside one of its folders: either way it would see the empty folder under
+/// the bind. None when it has none.
+fn held_by_missed_bind(
+    inspected: &serde_json::Value,
+    id: &str,
+    missed: &[String],
+) -> Option<String> {
+    let container = inspected
+        .as_array()?
+        .iter()
+        .find(|c| c["Id"].as_str() == Some(id))?;
+    missed
+        .iter()
+        .find(|bind| shares_a_folder(container, Path::new(bind.as_str())))
+        .cloned()
 }
 
 /// From `docker inspect`: (id, name) of each NekoServer app Docker could not start.
@@ -759,7 +963,12 @@ mod tests {
         let source = include_str!("drive_return.rs");
         let run =
             &source[source.find("pub fn run(").unwrap()..source.find("fn connected(").unwrap()];
-        assert!(run.find("thread::sleep").unwrap() < run.find("bring_back_placed(&cfg)").unwrap());
+        assert!(
+            run.find("thread::sleep").unwrap()
+                < run
+                    .find("bring_back_placed(&cfg, &mut missed, &mut back)")
+                    .unwrap()
+        );
         assert!(source.contains("backup::guard_present(cfgpath, data, media)?"));
         assert!(!source.contains(concat!("backup::", "guard(cfgpath")));
     }
@@ -1009,5 +1218,217 @@ mod tests {
         // Missing at boot and connected later: just mount it.
         assert_eq!(decide(None, false, true), Step::Remount { release: false });
         assert_eq!(decide(None, false, false), Step::Wait);
+    }
+    /// T1-13 (drill 6): d3, holding the moved backups and photos, came back and was mounted
+    /// again, but the binds on it stayed down. Every bind on that drive is found, by its
+    /// source or by what it waits for, parents first; others are left alone.
+    #[test]
+    fn the_binds_on_a_returning_drive_are_found_parents_first() {
+        let d3 = "/mnt/nekoserver-drives/d3";
+        let fstab = format!(
+            "UUID=aaaa {d3} ext4 defaults,nofail 0 2\n\
+             # {d3}/old /mnt/x none bind,nofail 0 0\n\
+             {d3}/backups/photos/archive /mnt/nekoserver-media/photos/archive none bind,nofail,x-systemd.requires-mounts-for={d3} 0 0\n\
+             {d3}/backups /mnt/nekoserver-media/backups none bind,nofail,x-systemd.requires-mounts-for={d3} 0 0\n\
+             {d3}/nekoserver/appdata/immich /mnt/nekoserver-data/appdata/immich none bind,nofail,x-systemd.requires-mounts-for={d3},x-systemd.requires-mounts-for=/mnt/nekoserver-data 0 0\n\
+             /srv/my\\040films /mnt/nekoserver-media/extra/films none bind,ro,nofail,x-systemd.requires-mounts-for={d3}/x 0 0\n\
+             /mnt/nekoserver-drives/d4/music /mnt/nekoserver-media/music none bind,nofail,x-systemd.requires-mounts-for=/mnt/nekoserver-drives/d4 0 0\n\
+             /mnt/nekoserver-drives/d30/a /mnt/a none bind,nofail 0 0\n\
+             {d3}/not-a-bind /mnt/b ext4 defaults 0 0\n"
+        );
+        let found: Vec<String> = binds_on(&fstab, Path::new(d3))
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            found,
+            [
+                "/mnt/nekoserver-media/backups",
+                "/mnt/nekoserver-data/appdata/immich",
+                "/mnt/nekoserver-media/extra/films",
+                "/mnt/nekoserver-media/photos/archive",
+            ]
+        );
+    }
+    /// Each bind is mounted again (a dead one released first), one that fails never stops
+    /// the next, and the ones that did not come back are returned.
+    #[test]
+    fn every_bind_is_tried_and_what_failed_is_said() {
+        let binds: Vec<PathBuf> = ["/m/up", "/m/dead", "/m/down", "/m/broken"]
+            .iter()
+            .map(PathBuf::from)
+            .collect();
+        let step = |p: &Path| match p.to_str().unwrap() {
+            "/m/up" => Ok(Step::Nothing),
+            "/m/dead" => Ok(Step::Remount { release: true }),
+            "/m/broken" => Err(Error::new("findmnt failed")),
+            _ => Ok(Step::Remount { release: false }),
+        };
+        let mounted = std::cell::RefCell::new(vec![]);
+        let mount = |p: &str, release: bool| {
+            mounted.borrow_mut().push((p.to_string(), release));
+            if p == "/m/dead" {
+                return Err(Error::new("systemctl start failed"));
+            }
+            Ok(())
+        };
+        let mut back = vec![PathBuf::from("/m")];
+        let missed = bring_back_binds(&binds, &step, &mount, &mut back);
+        assert_eq!(
+            *mounted.borrow(),
+            [
+                ("/m/dead".to_string(), true),
+                ("/m/down".to_string(), false)
+            ]
+        );
+        assert_eq!(missed, ["/m/dead", "/m/broken"]);
+        // Only what was mounted again counts as back (T1-19), added to what was there.
+        assert_eq!(back, [PathBuf::from("/m"), PathBuf::from("/m/down")]);
+        assert!(left_out(&[]).is_ok());
+        let said = left_out(&missed).unwrap_err().to_string();
+        assert!(said.contains("/m/dead, /m/broken"), "{said}");
+    }
+    /// T1-13 (b): the gateway did not start, start_again failed, and run() returned before
+    /// the apps: none of the 7 on the drive came back. The apps are tried whatever failed,
+    /// and the failure is still said.
+    #[test]
+    fn the_apps_start_even_when_a_service_or_a_bind_did_not() {
+        let tried = std::cell::Cell::new(false);
+        let gateway = Err(Error::new("nekoserver-gateway-lan.service did not start"));
+        let said = every_app_tried(gateway, &["/m/b".to_string()], || tried.set(true));
+        assert!(tried.get());
+        assert!(said.unwrap_err().to_string().contains("gateway-lan"));
+        tried.set(false);
+        let said = every_app_tried(Ok(()), &["/m/b".to_string()], || tried.set(true));
+        assert!(tried.get());
+        assert!(said.unwrap_err().to_string().contains("/m/b"));
+        assert!(every_app_tried(Ok(()), &[], || {}).is_ok());
+    }
+    /// Where they are called: a returned drive's binds before the apps; one drive of a
+    /// group's own that does not mount again never ends the run before the apps.
+    #[test]
+    fn a_returned_drive_brings_its_binds_back_before_the_apps() {
+        let source = include_str!("drive_return.rs");
+        let run = &source
+            [source.find("pub fn run(").unwrap()..source.find("fn with_one_drive(").unwrap()];
+        let placed = &source
+            [source.find("fn bring_back_placed(").unwrap()..source.find("fn plain_uuid(").unwrap()];
+        assert_eq!(placed.matches("binds_back(&folder, back)").count(), 2);
+        assert!(!placed.contains(concat!("release)", "?")));
+        assert!(run.contains("missed.extend(binds_back(path, &mut back))"));
+        // T1-19: a drive mounted again counts as back, the SSD's and HDD's too.
+        assert!(run.contains("back.push(path.clone());"));
+        assert!(placed.contains("back.push(folder.clone());"));
+        // A drive holding only a folder the Media folders page made comes back too.
+        assert!(placed.contains("common::drives_watched(cfg)"));
+        // Its running apps restart in both ends of the run, before the stopped ones start.
+        for start in run.match_indices(concat!("start_failed_apps(\"Drive return\", ", "&missed)"))
+        {
+            let before = &run[..start.0];
+            let restart = before.rfind("restart_apps_on(\"Drive return\", &back, &missed);");
+            assert!(restart.is_some_and(|at| !before[at..].contains("return ")));
+        }
+        assert!(!run.contains(concat!("\"Drive return\")", "?")));
+        assert!(run.find("bring_back_placed(").unwrap() < run.find("every_app_tried(").unwrap());
+    }
+    /// T5, review of T1-13: an app with a folder on a bind that did not come back would be
+    /// started on the empty folder under it (and Jellyfin drop the films it no longer sees):
+    /// it stays stopped. A folder on the bind, or holding it, counts; others start.
+    #[test]
+    fn an_app_on_a_bind_that_did_not_come_back_stays_stopped() {
+        let app = |id: &str, sources: &[&str]| {
+            let mounts: Vec<_> = sources
+                .iter()
+                .map(|s| serde_json::json!({"Type": "bind", "Source": s}))
+                .collect();
+            serde_json::json!({"Id": id, "Mounts": mounts})
+        };
+        let inspected = serde_json::json!([
+            app(
+                "jellyfin",
+                &[
+                    "/mnt/nekoserver-data/appdata/jellyfin",
+                    "/mnt/nekoserver-media/library/movies"
+                ]
+            ),
+            app("radarr", &["/mnt/nekoserver-media/library"]),
+            app(
+                "navidrome",
+                &[
+                    "/mnt/nekoserver-media/music",
+                    "/mnt/nekoserver-media/library-old"
+                ]
+            ),
+            app("immich", &[]),
+            app(
+                "bazarr",
+                &["/mnt/nekoserver-media/library/movies/subtitles"]
+            ),
+        ]);
+        let missed = ["/mnt/nekoserver-media/library/movies".to_string()];
+        let held = |id| held_by_missed_bind(&inspected, id, &missed);
+        assert_eq!(held("jellyfin").as_deref(), Some(missed[0].as_str()));
+        assert_eq!(held("radarr").as_deref(), Some(missed[0].as_str()));
+        assert_eq!(held("navidrome"), None);
+        assert_eq!(held("bazarr").as_deref(), Some(missed[0].as_str()));
+        assert_eq!(held("immich"), None);
+        assert_eq!(held("gone"), None);
+        assert_eq!(held_by_missed_bind(&inspected, "jellyfin", &[]), None);
+    }
+    /// T1-19: d3 pulled and plugged in again in the same boot: the apps that kept running on
+    /// its dead mount restart, and only those: an app on, inside or holding a folder that
+    /// came back; not one elsewhere, a stopped one (started by start_failed_apps), or
+    /// someone else's container.
+    #[test]
+    fn the_running_apps_on_a_drive_that_came_back_restart_and_only_those() {
+        let app = |id: &str, project: &str, running: bool, sources: &[&str]| {
+            let mounts: Vec<_> = sources
+                .iter()
+                .map(|s| serde_json::json!({"Type": "bind", "Source": s}))
+                .collect();
+            serde_json::json!({
+                "Id": id, "Name": format!("/{id}-1"), "Mounts": mounts,
+                "Config": {"Labels": {"com.docker.compose.project": project}},
+                "State": {"Running": running},
+            })
+        };
+        let inspected = serde_json::json!([
+            app(
+                "jellyfin",
+                "neko-jellyfin",
+                true,
+                &["/srv/data/jellyfin", "/srv/media/movies"]
+            ),
+            app(
+                "immich",
+                "neko-immich",
+                true,
+                &["/mnt/nekoserver-drives/d3/photos/upload"]
+            ),
+            app("navidrome", "neko-navidrome", true, &["/srv/media/music"]),
+            app("radarr", "neko-radarr", false, &["/srv/media/movies"]),
+            app("plex", "plex", true, &["/srv/media/movies"]),
+            app("glances", "neko-glances", true, &["/srv"]),
+        ]);
+        let back = [
+            PathBuf::from("/mnt/nekoserver-drives/d3"),
+            PathBuf::from("/srv/media/movies"),
+        ];
+        let chosen: Vec<String> = on_returned(&inspected, &back)
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        assert_eq!(chosen, ["jellyfin", "immich", "glances"]);
+        assert_eq!(on_returned(&inspected, &back)[0].1, "jellyfin-1");
+        assert!(on_returned(&inspected, &[]).is_empty());
+        assert!(on_returned(&serde_json::Value::Null, &back).is_empty());
+        // Both calls hand it what did not come back.
+        let source = include_str!("drive_return.rs");
+        assert_eq!(
+            source
+                .matches(concat!("start_failed_apps(\"Drive return\", ", "&missed)"))
+                .count(),
+            2
+        );
     }
 }

@@ -273,7 +273,9 @@ pub fn run(a: &crate::Args) -> Result<()> {
             let media = common::mount_path(cfg["media_mount"].as_str().unwrap_or(""))?;
             // The right drives first: until they are, the apps stay held (tried again in a
             // minute).
-            crate::backup::guard(&cfgpath, &data, &media)?;
+            // An Extra drive that is away keeps only its own apps stopped (guard_present),
+            // as at a drive's return; another drive in a drive's place still refuses.
+            crate::backup::guard_present(&cfgpath, &data, &media)?;
             println!("NAS watch: the drives on the network storage box take writes again; starting the apps");
             // No longer held before the start: the start guard of Docker, Samba and the
             // gateway refuses while held (startup.rs held_back).
@@ -495,6 +497,11 @@ mod tests {
         let started = resume.find("drive_return::start_again(").unwrap();
         let put_back = resume.find("return save(&held);").unwrap();
         assert!(lifted < started && started < put_back);
+        // An Extra drive away (not on the NAS) kept every app held once the NAS took writes
+        // again: its apps stay stopped, the others start, as at a drive's return.
+        let before = &resume[..started];
+        assert!(before.contains("crate::backup::guard_present(&cfgpath, &data, &media)?;"));
+        assert!(!before.contains(concat!("crate::backup::guard(", "&cfgpath")));
     }
     #[test]
     fn the_apps_stop_once_on_a_failing_drive_and_start_only_when_all_take_writes() {

@@ -172,8 +172,35 @@ CHOICES = (
         'The drive mounts: the lines NekoServer wrote in /etc/fstab and the mount folders (the drives themselves stay as they are)',
         False,
     ),
+    (
+        'old',
+        False,
+        "The old copies the dashboard's Drives page kept after a move (nekoserver-old-...: your files as they were "
+        'before they moved, on the drive they moved from)',
+        True,
+    ),
 )
-PERSONAL = {'photos': 'photos', 'media': 'movies and music', 'cloud': 'Nextcloud files', 'backups': 'backups'}
+PERSONAL = {
+    'photos': 'photos',
+    'media': 'movies and music',
+    'cloud': 'Nextcloud files',
+    'backups': 'backups',
+    'old': 'old copies',
+}
+PHOTOS_NUMBER = next(number for number, (key, *_) in enumerate(CHOICES, 1) if key == 'photos')
+# The number of the old copies in the checklist.
+OLD_NUMBER = next(number for number, (key, *_) in enumerate(CHOICES, 1) if key == 'old')
+# A move on the Drives page (1.0.1, storage_jobs.OLD_NAME) keeps the kind's files as they
+# were in nekoserver-old-<kind>-<id> on the drive they left; one being deleted from the
+# dashboard is renamed nekoserver-deleting-... first.
+OLD_COPY = re.compile(r'nekoserver-(old|deleting)-(backups|photos|movies|music|cloud)-[0-9a-f]{16}')
+OLD_WORDS = {
+    'backups': 'your backups',
+    'photos': 'your photos',
+    'movies': 'your movies and shows',
+    'music': 'your music',
+    'cloud': 'your Nextcloud files',
+}
 # The checklist's number of the apps' data.
 DATA_NUMBER = next(number for number, (key, *_) in enumerate(CHOICES, 1) if key == 'data')
 # The files kept by choice whose app knows them only through its database, which is in
@@ -225,6 +252,11 @@ INSTALL = 'install'  # in a drive's "holds": a group's apps are installed there
 # The kinds of files (shared.json "locations") each choice covers.
 CHOICE_HOLDS = {'photos': ('photos',), 'media': ('music', 'movies'), 'cloud': ('cloud',)}
 GROUP_NAMES = {'photos': 'Photos', 'movies': 'Movies and shows', 'music': 'Music', 'cloud': 'Nextcloud'}
+# The backups moved to a drive of its own (1.0.1, placement.DATA_FOLDERS): its folder
+# 'backups', and the photo archive in 'photos' (photos/archive), which goes with the
+# photos as on the HDD.
+BACKUPS = 'backups'
+BACKUP_TOPS = {'backups': ('backups',), 'photos': ('photos',)}
 DRIVE_NAME = re.compile(r'[a-z][a-z0-9]{0,15}')  # neko_common.DRIVE_NAME
 NOT_GROUP_DRIVES = ('data_ssd', 'media_hdd', 'ssd', 'media', 'one')  # the two, and the one drive of both
 
@@ -270,8 +302,33 @@ def held_words(holds):
     """What is on a group's own drive, in words: "the settings of the apps installed there,
     Music's files"."""
     words = ["the settings and databases of the apps installed there"] if INSTALL in holds else []
-    words += [GROUP_NAMES.get(what, what) + "'s files" for what in holds if what != INSTALL]
-    return ', '.join(words)
+    words += [
+        'the backups' if what == BACKUPS else GROUP_NAMES.get(what, what) + "'s files"
+        for what in holds
+        if what != INSTALL
+    ]
+    return ', '.join(words) or "nothing of NekoServer's is placed there; what is on it stays"
+
+
+def extra_records(settings):
+    """{name: record} of every drive of its own under "storage" (1.0.1: the dashboard's
+    Drives page adds one before anything is moved onto it), with the same checks as
+    group_drives."""
+    return {
+        name: record
+        for name, record in _section(settings, 'storage').items()
+        if isinstance(record, dict)
+        and DRIVE_NAME.fullmatch(name)
+        and name not in NOT_GROUP_DRIVES
+        and isinstance(record.get('uuid'), str)
+        and record['uuid']
+        and record.get('folder') is None
+        and not _section(record, 'network').get('export')
+    }
+
+
+# Where the Media folders page makes a folder on an Extra drive (part C): <dN>/media/<kind>.
+MADE_TOP = 'media'
 
 
 def own_folders(settings):
@@ -301,6 +358,7 @@ def own_folder(entry):
         'what': str(entry.get('holds') or 'media'),
         'share': text('share'),
         'mount': text('mount'),
+        'made': text('made'),
     }
 
 
@@ -359,10 +417,25 @@ def newest_drive_record(root='/'):
     return record, name
 
 
+PLACES = 'etc/nekoserver-os/places.json'  # neko_common.PLACES_RECORD, under the system's root
+
+
 def find_settings(root=ROOT, system='/'):
     """(settings, where they came from, in words). my-config.json in this folder first. Without
     it, the drives setup recorded in /etc (newest of DRIVE_RECORDS) on top of the template, so
-    that a fresh download still finds the real mount folders and UUIDs."""
+    that a fresh download still finds the real mount folders and UUIDs. Then the places the
+    Drives page last wrote (neko_common.current_places, read before anything is removed): a
+    my-config.json from before a move never wins silently (T1-16, drill 10)."""
+    settings, source = _found_settings(root, system)
+    if not settings or source.startswith('the template'):
+        return settings, source  # nothing on the drives is removed: no places to take
+    from neko_common import current_places
+
+    settings, line = current_places(settings, Path(system) / PLACES)
+    return settings, source + ('. ' + line if line else '')
+
+
+def _found_settings(root, system):
     mine = _json_object(Path(root) / SETTINGS)
     if mine is not None:
         return mine, str(Path(root) / SETTINGS)
@@ -564,6 +637,8 @@ class Plan:
         # A group's own drive (0.50.0, gate run C18): mounted at /mnt/nekoserver-drives/<name>
         # and checked like the SSD and the HDD before anything on it goes.
         self.placed = group_drives(settings)
+        for name, record in extra_records(settings).items():
+            self.placed.setdefault(name, (record, []))
         expected.update({EXTRA + name: record for name, (record, _holds) in self.placed.items()})
         self.records = expected
         self.drives = tuple(expected)
@@ -907,10 +982,26 @@ class Plan:
 
     def drive_paths(self, key):
         found = self.owned('data', SSD_DATA) if key == 'data' else []
-        found += [p for drive, name in DRIVE_PLACES.get(key, ()) for p in self.owned(drive, (name,))]
+        found += [
+            p
+            for drive, name in DRIVE_PLACES.get(key, ())
+            if not (drive == 'media' and name == BACKUPS and self.backups_elsewhere())
+            for p in self.owned(drive, (name,))
+        ]
         for name in self.placed:
             found += self.owned(EXTRA + name, self.group_drive_names(name, key))
+        if key == 'old':
+            found = [p for drive in self.drives for p in self.old_copies(drive)]
         return found + (self.usb_paths() if key == 'backups' else [])
+
+    def backups_elsewhere(self):
+        """The backups were moved to a drive of its own: the HDD's 'backups' is only the
+        mount of that folder there (storage.backup_binds), never the backups themselves."""
+        return any(BACKUPS in holds for _record, holds in self.placed.values())
+
+    def old_copies(self, drive):
+        """The old copies a move left at the top of a drive (OLD_COPY)."""
+        return [p for p in self.listed(drive) if OLD_COPY.fullmatch(p.name)]
 
     def group_drive_names(self, name, key):
         """The top-level entries of a group's own drive that a choice covers: the apps'
@@ -918,7 +1009,10 @@ class Plan:
         kind of files placed there (photos, the library, Nextcloud's files)."""
         holds = self.placed[name][1]
         names = [GROUP_DRIVE_OWN] if key == 'data' and INSTALL in holds else []
-        return names + sorted({top_folder(what) for what in CHOICE_HOLDS.get(key, ()) if what in holds})
+        tops = {top_folder(what) for what in CHOICE_HOLDS.get(key, ()) if what in holds}
+        if BACKUPS in holds:
+            tops.update(BACKUP_TOPS.get(key, ()))
+        return names + sorted(tops)
 
     def others(self):
         """What is on the drives but is none of NekoServer's: it stays, whatever is chosen."""
@@ -928,9 +1022,16 @@ class Plan:
                 known[drive].add(name)
         for name in self.placed:
             known[EXTRA + name] = {n for key, *_ in CHOICES for n in self.group_drive_names(name, key)}
+            # The folder that holds what the Media folders page made there (named above).
+            if any(self.made_on(folder) == name for folder in self.own_folders):
+                known[EXTRA + name].add(MADE_TOP)
         found = []
         for drive in self.drives:
-            found.extend(p for p in self.listed(drive) if not ours(drive, p.name, known[drive]))
+            found.extend(
+                p
+                for p in self.listed(drive)
+                if not ours(drive, p.name, known[drive]) and not OLD_COPY.fullmatch(p.name)
+            )
         return found
 
     def listed(self, drive):
@@ -965,8 +1066,35 @@ class Plan:
             and len(line.split()) >= 2
             # Never a line of the system itself, whatever the settings name.
             and line.split()[1] not in SYSTEM_PLACES
-            and (line.split()[1] in folders or any(line.split()[0] == 'UUID=' + u for u in self.uuids))
+            and (
+                line.split()[1] in folders
+                or line.split()[1].startswith(EXTRA_MOUNTS + '/')
+                or self.extra_bind(line)
+                or any(line.split()[0] == 'UUID=' + u for u in self.uuids)
+            )
         ]
+
+    def extra_bind(self, line):
+        """A bind of NekoServer's from a drive under EXTRA_MOUNTS (the moved backups and
+        photo archive, the apps installed there: storage.installed_line), found by its
+        source or by the drive it waits for (x-systemd.requires-mounts-for). Their mount
+        point is elsewhere (on the HDD, the SSD). A bind of one of the person's own folders
+        is theirs and stays. Fields are read as the paths they name: fstab writes a space as
+        \\040 ("T1\\040Films")."""
+        from existing_media import unescaped
+
+        fields = line.split()
+        if len(fields) < 4 or 'bind' not in fields[3].split(','):
+            return False
+        source = os.path.normpath(unescaped(fields[0]))
+        if any(source == os.path.normpath(folder['path']) for folder in self.own_folders):
+            return False
+        waits = [
+            unescaped(o.split('=', 1)[1])
+            for o in fields[3].split(',')
+            if o.startswith('x-systemd.requires-mounts-for=')
+        ]
+        return any(place.startswith(EXTRA_MOUNTS + '/') for place in [source, *waits])
 
     # ---- the choices, in words a person can check
     def _group(self, key):
@@ -1099,12 +1227,12 @@ class Plan:
             notes.append('Take out of /etc/fstab: ' + ' | '.join(lines))
         for folder in (self.data, self.media, self.external):
             if self.mounted(folder):
-                notes.append('Unmount ' + folder + ' and remove the empty folder')
+                notes.append(unmount_note(folder))
         for name in sorted(self.placed):
             if self.at(self.mount_of(EXTRA + name)).is_dir():
-                notes.append(
-                    'Unmount ' + self.mount_of(EXTRA + name) + ' (a drive of its own) and remove the empty folder'
-                )
+                notes.append(unmount_note(self.mount_of(EXTRA + name), ' (a drive of its own)'))
+        for folder in self.unnamed_extra():
+            notes.append(unmount_note(folder, ' (a drive the settings do not name)'))
         if self.own_folders:
             notes.append(
                 'Your own folders used where they are are unmounted from the library; the folders, and the '
@@ -1128,6 +1256,16 @@ class Plan:
                 + self.external
                 + ' right now (NekoServer mounts it for each weekly copy): '
                 'plug it in and mount it there first, or delete its folders yourself'
+            )
+        if key == 'backups':
+            notes.extend(
+                'The photo archive in '
+                + self.mount_of(EXTRA + name)
+                + '/photos/archive goes with your photos (choice '
+                + str(PHOTOS_NUMBER)
+                + '), as on the HDD'
+                for name, (_record, holds) in sorted(self.placed.items())
+                if BACKUPS in holds and self.owned(EXTRA + name, ('photos/archive',))
             )
         if key == 'data' and self.docker_root():
             notes.append(
@@ -1163,11 +1301,21 @@ class Plan:
         lines = ['== The drives and folders NekoServer uses:']
         for drive, words in (('data', 'the SSD: the apps'), ('media', 'the HDD: media files and backups')):
             lines.append('   - ' + self.mount_of(drive) + ' (' + words + ')')
+            lines.extend(self.old_lines(drive))
         if self.records['external'].get('uuid'):
             lines.append('   - ' + self.external + ' (the USB drive: the weekly copy, when it is plugged in)')
         for name, (_record, holds) in sorted(self.placed.items()):
             lines.append('   - ' + self.mount_of(EXTRA + name) + ' (a drive of its own: ' + held_words(holds) + ')')
+            lines.extend(self.held_on(EXTRA + name) + self.made_lines(name) + self.old_lines(EXTRA + name))
+        for folder in self.unnamed_extra():
+            lines.append(
+                '   - '
+                + folder
+                + " (a drive the settings do not name: nothing on it is removed; it is unmounted with the mounts)"
+            )
         for folder in self.own_folders:
+            if self.made_on(folder):
+                continue  # named under its drive, above
             shared = ':' in folder['share'] or folder['share'].startswith('//')
             lines.append(
                 '   - '
@@ -1180,6 +1328,69 @@ class Plan:
         for share, mount in sorted({(f['share'], f['mount']) for f in self.own_folders if ':' in f['share']}):
             lines.append('   - ' + share + ' at ' + mount + ' (your own shared folder: kept, with its /etc/fstab line)')
         return lines
+
+    def old_lines(self, drive):
+        """The old copies on a drive, each with its size: kept unless they are chosen."""
+        return [
+            '       '
+            + str(p)
+            + ' ('
+            + self.size(p)
+            + '): the old copy of '
+            + OLD_WORDS[OLD_COPY.fullmatch(p.name).group(2)]
+            + ' from a move on the Drives page; kept unless you choose '
+            + str(OLD_NUMBER)
+            for p in self.old_copies(drive)
+        ]
+
+    def made_on(self, folder):
+        """The Extra drive a folder of the person's was made on by the Media folders page
+        (part C: <dN>/media/<kind>, saved with "made": "dN"), when it is one the plan names
+        and the folder is on it; else ''."""
+        name = folder.get('made', '')
+        if name not in self.placed:
+            return ''
+        return name if Path(folder['path']).parent.parent == Path(self.mount_of(EXTRA + name)) else ''
+
+    def made_lines(self, name):
+        """The folders the Media folders page made on drive `name` for the person's films,
+        shows or music: theirs, so kept whatever is chosen (T3-101-4)."""
+        return [
+            '       '
+            + folder['path']
+            + ': made by the Media folders page for '
+            + WHAT_WORDS.get(folder['what'], folder['what'])
+            + ': your own folder: kept, never removed'
+            for folder in self.own_folders
+            if self.made_on(folder) == name
+        ]
+
+    def held_on(self, drive):
+        """What of NekoServer's is on a drive of its own, each with its size and the choice
+        that deletes it (kept unless it is chosen)."""
+        name = drive[len(EXTRA) :]
+        lines = []
+        for number, (key, *_) in enumerate(CHOICES, 1):
+            for p in self.owned(drive, self.group_drive_names(name, key)):
+                lines.append('       ' + str(p) + ' (' + self.size(p) + '): kept unless you choose ' + str(number))
+        return lines
+
+    def unnamed_extra(self):
+        """The folders under EXTRA_MOUNTS no drive of the settings is mounted at."""
+        top = self.at(EXTRA_MOUNTS)
+        named = {self.mount_of(EXTRA + name) for name in self.placed} | {ONE_DRIVE}
+        try:
+            found = sorted(EXTRA_MOUNTS + '/' + p.name for p in top.iterdir() if p.is_dir())
+        except OSError:
+            return []
+        return [folder for folder in found if folder not in named]
+
+    def drive_words(self, path):
+        """', on Extra drive d3' for a path on a drive of its own, else nothing."""
+        for name in self.placed:
+            if Path(path).parent == self.folder_of(EXTRA + name):
+                return ', on Extra drive ' + name
+        return ''
 
     def kept_without_database(self, chosen):
         """What the person keeps whose app's database goes with the apps' data: kept as
@@ -1212,7 +1423,9 @@ class Plan:
             lines.extend('   - ' + note for note in group['notes'])
             keep = self.kept_for_docker(chosen)
             lines.extend(
-                '   - remove ' + str(p) + ('  (' + self.size(p) + ')' if p.is_dir() and key != 'server' else '')
+                '   - remove '
+                + str(p)
+                + ('  (' + self.size(p) + self.drive_words(p) + ')' if p.is_dir() and key != 'server' else '')
                 for p in group['paths']
                 if p not in keep
             )
@@ -1223,6 +1436,11 @@ class Plan:
     def phrase(self, chosen):
         personal = [PERSONAL[k] for k, *_ in CHOICES if k in chosen and k in PERSONAL]
         return 'remove NekoServer' + (' and delete my ' + ', '.join(personal) if personal else '')
+
+
+def unmount_note(folder, what=''):
+    """The plan's line for a drive the mounts choice unmounts: `what` says which kind it is."""
+    return 'Unmount ' + folder + what + ' and remove the empty folder'
 
 
 def choose(ask=input, out=print):
@@ -2319,6 +2537,11 @@ def _remove_mounts(plan, path, call, out):
     left = []
     block, inside = fstab_blocks(path.read_text()) if path.is_file() else ([], [])
     lines = plan.fstab_lines() + block
+    # Binds from a drive of its own written outside setup's blocks: unmounted with what is
+    # mounted inside the drives, before the drives under them.
+    from existing_media import unescaped
+
+    inside = inside + [unescaped(line.split()[1]) for line in lines if plan.extra_bind(line)]
     if lines:
         kept = [line for line in path.read_text().splitlines() if line not in lines]
         backup = replace_system_file(path, '\n'.join(kept) + '\n')

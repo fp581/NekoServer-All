@@ -321,7 +321,13 @@ def music_row(config, times, drive, row):
     """The nightly music copy's row (G7: with the person's own folder on a share when asked)."""
     import existing_media
 
-    own = ' and your own music folder on the network share' if existing_media.backed_up(config) else ''
+    # Each folder of the person's the copy takes too: on a NAS, or made on an Extra drive.
+    places = [
+        f'on Extra drive {e["made"]}' if e.get('made') else 'on the network share'
+        for e in existing_media.extras(config)
+        if e['holds'] == 'music' and e.get('backup') is True
+    ]
+    own = ' and your own music folder ' + ' and '.join(dict.fromkeys(places)) if places else ''
     row(
         'music',
         'Your music (the library' + own + ')',

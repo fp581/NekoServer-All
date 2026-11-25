@@ -100,6 +100,8 @@ REFUSALS = {
     'shared folder is mounted here, not its network address).',
     'unsafe': '{path} cannot be used: {why}.',
     'own': '{path} is inside NekoServer\'s own folders ({inside}). Those are used already; choose a folder of yours.',
+    'holds_own': '{path} holds NekoServer\'s own folders ({inside}: {what}), which are used already. Choose a folder '
+    'of yours inside it, beside them.',
     'not_mounted': 'Nothing is mounted at {mount} now, so {path} is an empty folder on this PC, not your {what}. '
     'Switch the NAS or the drive on (or mount it), then try again. Nothing was changed.',
     'bare_mount_folder': '{path} is a folder on the disk Linux runs from, in the place where drives and shares are '
@@ -179,6 +181,65 @@ def own_folders(config):
     return found
 
 
+def drives_copies(path):
+    """The Drives page's copies a path is in (an old copy kept after a move, one at work or
+    one being deleted: storage_jobs.py). Never a folder of the person's."""
+    import storage_jobs
+
+    names = tuple(
+        name.split('{', 1)[0] for name in (storage_jobs.OLD_NAME, storage_jobs.NEW_COPY, storage_jobs.DELETING)
+    )
+    parts = Path(path).parts
+    return [str(Path(*parts[: i + 1])) for i, part in enumerate(parts) if part.startswith(names)]
+
+
+def own_on_drives(config):
+    """[(folder, what it holds)]: NekoServer's own folders on its Extra drives, which the
+    Drives page put there: a kind of data moved to one (its folders, as placement names
+    them), and the copies a move keeps, makes or deletes at a drive's top (T3-101-2: a
+    drive holding moved photos or an old copy was accepted as a films folder)."""
+    import storage_jobs
+
+    found = []
+    for kind in storage_jobs.KINDS:
+        try:
+            place = storage_jobs.place_of(config, kind)
+        except RuntimeError:
+            continue
+        if place in extra_drives(config):
+            top = storage_jobs.root_of(config, place)
+            found += [(str(top / f), f'your {storage_jobs.KIND_WORDS[kind]}') for f in storage_jobs.kind_folders(kind)]
+    said = {
+        storage_jobs.OLD_NAME: 'an old copy the Drives page keeps after a move',
+        storage_jobs.NEW_COPY: 'a copy a move on the Drives page is making',
+        storage_jobs.DELETING: 'an old copy the Drives page is deleting',
+    }
+    for name in sorted(extra_drives(config)):
+        try:
+            entries = sorted((EXTRA_MOUNTS / name).iterdir())
+        except OSError:
+            continue
+        for entry in entries:
+            found += [(str(entry), what) for start, what in said.items() if entry.name.startswith(start.split('{')[0])]
+    return found
+
+
+def refuse_own(config, real):
+    """Refused when `real` is NekoServer's own folder, inside one or holding one: its
+    folders, a Drives job's copies, and what the Drives page put on Extra drives."""
+    for own in own_folders(config):
+        if real == own or real.startswith(own + os.sep) or own.startswith(real + os.sep):
+            raise Refused('own', path=real, inside=own)
+    copies = drives_copies(real)
+    if copies:
+        raise Refused('own', path=real, inside=copies[0])
+    for own, what in own_on_drives(config):
+        if within(real, own):
+            raise Refused('own', path=real, inside=own)
+        if within(own, real):
+            raise Refused('holds_own', path=real, inside=own, what=what)
+
+
 def checked_folder(config, value):
     """The folder a person gave, as the real folder it names: absolute, no control
     characters, not the system's, not NekoServer's own. Refused otherwise."""
@@ -187,9 +248,7 @@ def checked_folder(config, value):
     real = os.path.realpath(value)
     if real == '/' or any(real == top or real.startswith(top + os.sep) for top in SYSTEM):
         raise Refused('unsafe', path=real, why='it is one of the system\'s own folders')
-    for own in own_folders(config):
-        if real == own or real.startswith(own + os.sep) or own.startswith(real + os.sep):
-            raise Refused('own', path=real, inside=own)
+    refuse_own(config, real)
     if not os.path.isdir(real):
         raise Refused('not_a_folder', path=real)
     return real
@@ -609,7 +668,8 @@ def usable_saved_path(config, holds, path):
     # Then it is judged by its words for now (checked by check() when it was chosen):
     # nothing is done with a folder that is away but saying so.
     real = real_path(path) or path
-    if real != path or real == '/' or any(within(real, top) for top in (*SYSTEM, *own_folders(config))):
+    tops = (*SYSTEM, *own_folders(config), *drives_copies(real))
+    if real != path or real == '/' or any(within(real, top) for top in tops):
         raise RuntimeError(f'The "extra" folder for {holds} in my-config.json is not a folder that may be used')
 
 

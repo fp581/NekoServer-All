@@ -104,6 +104,101 @@ const CHECKS = {
     await page.waitForTimeout(500);
     return { picked, steps };
   },
+  /* The Drives page in `look` at `width`: each kind card's badge and words, then the
+     music moved onto the backups' drive: the move window's tick before "Move here", and
+     whether the page and the window fit. */
+  async drivesBeside(browser, { width, look }) {
+    const page = await open(browser, 'drives', width, [], look);
+    await page.waitForSelector('.drive-kind button');
+    // What sticks out past the window's right edge (the deepest ones), named.
+    const fits = () =>
+      page.evaluate(() => {
+        const edge = document.documentElement.clientWidth + 1;
+        const out = [...document.querySelectorAll('body *')].filter(
+          n => n.getClientRects().length && n.getBoundingClientRect().right > edge
+        );
+        return out
+          .map(n => n.tagName.toLowerCase() + (n.className ? '.' + String(n.className).replaceAll(' ', '.') : ''))
+          .slice(-6);
+      });
+    const cards = await page.evaluate(() =>
+      [...document.querySelectorAll('.drive-kind')].map(c => ({
+        badge: c.querySelector('.badge').textContent.trim(),
+        hints: [...c.querySelectorAll('.hint')].map(h => h.textContent.trim())
+      }))
+    );
+    const pageWide = await fits();
+    await page.click('[aria-label="Move music to another drive"]');
+    await page.click('[aria-label="Move to Media and backups drive"]');
+    await page.waitForSelector('#drive-beside-ack');
+    const go = '#dialog button:text-is("Move here")';
+    const before = await page.evaluate(() => ({
+      words: document.querySelector('#dialog p').textContent,
+      tick: document.querySelector('#drive-beside-ack').closest('label').textContent.trim(),
+      off: [...document.querySelectorAll('#dialog button')].find(b => b.textContent === 'Move here').disabled
+    }));
+    const dialogWide = await fits();
+    await page.check('#drive-beside-ack');
+    const on = await page.evaluate(
+      () => ![...document.querySelectorAll('#dialog button')].find(b => b.textContent === 'Move here').disabled
+    );
+    await page.click(go);
+    await page.waitForTimeout(500);
+    return { cards, before, on, wide: [...pageWide, ...dialogWide], errors: page.errorsSeen };
+  },
+  /* The Drives page with a job a journal waits with: what it says, which buttons are
+     offered and on, then "Give it up" with the PIN; whether the page fits. */
+  async drivesStuck(browser, { width, look }) {
+    const page = await open(browser, 'drives', width, [], look);
+    await page.waitForSelector('.drive-needs');
+    const shown = await page.evaluate(() => ({
+      title: document.querySelector('.media-outcome .badge').textContent.trim(),
+      needs: [...document.querySelectorAll('.drive-needs li')].map(li => li.textContent),
+      buttons: [...document.querySelectorAll('.media-outcome button')].map(b => [b.textContent, b.disabled]),
+      wide: document.documentElement.scrollWidth > document.documentElement.clientWidth + 1,
+      out: [...document.querySelectorAll('body *')]
+        .filter(
+          n => n.getClientRects().length && n.getBoundingClientRect().right > document.documentElement.clientWidth + 1
+        )
+        .map(n => n.tagName.toLowerCase() + '.' + String(n.className).replaceAll(' ', '.'))
+        .slice(-6)
+    }));
+    // Pressed and read in one go: the PIN field holds the focus as the dialog opens, not a
+    // frame later (GitHub CI found the close button focused).
+    const dialog = await page.evaluate(() => {
+      [...document.querySelectorAll('.media-outcome button')].find(b => b.textContent === 'Give it up').click();
+      return {
+        typed: document.getElementById('drive-confirm') !== null,
+        focused: document.activeElement.id,
+        wide: document.getElementById('dialog').scrollWidth > document.getElementById('dialog').clientWidth + 1
+      };
+    });
+    await page.fill('#drive-pin', '2468');
+    await page.click('#dialog button[type=submit]');
+    await page.waitForTimeout(500);
+    return { shown, dialog, errors: page.errorsSeen };
+  },
+  /* "Use for films, shows or music" on an Extra drive (the Drives page's button, part C):
+     the Media folders form with "A new folder on an Extra drive" chosen for that drive, new
+     downloads ticked and the form sent. What the form showed, and focus left on the drive. */
+  async mediaMake(browser, { width }) {
+    const page = await open(browser, 'media', width);
+    await page.waitForSelector('#media-path');
+    await page.evaluate(() => useDriveForMedia('d4'));
+    await page.waitForSelector('#media-drive:not([hidden])');
+    await until(page, () => !document.getElementById('media-drive').closest('label').hidden);
+    const shown = await page.evaluate(() => ({
+      how: document.querySelector('#media-how-made').checked,
+      drive: document.getElementById('media-drive').value,
+      path: document.getElementById('media-path').closest('label').hidden,
+      note: document.querySelector('.media-how .hint').textContent,
+      button: document.querySelector('.media-form button[type=submit]').textContent
+    }));
+    await page.check('#media-downloads');
+    await page.click('.media-form button[type=submit]');
+    await page.waitForTimeout(500);
+    return { shown, errors: page.errorsSeen };
+  },
   /* How wide the page is at `width`: [its scroll width, the window's, whether the page's
      title and the buttons beside it overlap]. */
   async pageWidth(browser, { route, width }) {

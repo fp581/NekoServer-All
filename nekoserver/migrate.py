@@ -102,7 +102,11 @@ def record(journal=JOURNAL, **fields):
 
 
 def load_settings(settings):
-    return settings_path(settings), read_settings(settings)
+    from neko_common import take_places
+
+    config = read_settings(settings)
+    take_places(config, [settings])  # the Drives page's places (T1-17)
+    return settings_path(settings), config
 
 
 def lsblk():
@@ -239,11 +243,19 @@ def why_not(row, need):
 def nothing_at_work(lock=SETUP_LOCK, recovery=None):
     """Why a move (either way) cannot start now, or None: setup running, an unfinished app
     update, monthly check, upgrade or move, or a backup or app update at work (the
-    backups' shared lock, `recovery`)."""
+    backups' shared lock, `recovery`). A change from the Drives page that is not finished
+    has copies at work at a drive's top (nekoserver-new-...): the whole drive is never
+    copied with them."""
+    import storage_jobs
+
     for path, what in (
         (MAINTENANCE_JOURNAL, 'An app update or the monthly check is not finished yet'),
         (UPGRADE_JOURNAL, 'A NekoServer upgrade is at work'),
         (JOURNAL, 'A move to another drive is not finished yet (sudo python3 migrate.py resume)'),
+        (
+            storage_jobs.STATE / storage_jobs.JOURNAL,
+            'A change on the Drives page is not finished yet (restart the computer)',
+        ),
     ):
         if Path(path).exists():
             return what
@@ -285,14 +297,22 @@ def mount_staging(uuid, fstype, staging=STAGING):
     return staging
 
 
-def copy(source, target, final=False, out=print, again=False):
+def copy(source, target, final=False, out=print, again=False, skip=()):
     """One pass of the copy; the last one (`final`, with the apps stopped) also removes
     from the new drive what was deleted on the old one meanwhile. `again`: the new drive
     holds an earlier attempt's copy, whose files are compared by checksum, not by size
     and time: a file the comparison found different (a bad cable, say) keeps its size and
     time, so it was never copied again and every later attempt stopped on it (seen in
-    0.51.1)."""
-    argv = [*RSYNC, *(['--delete'] if final else []), *(['--checksum'] if again else []), f'{source}/', f'{target}/']
+    0.51.1). `skip`: names at the top of `source` that are another kind's folders (a Drives
+    job, T1-20): neither copied nor deleted at `target`."""
+    argv = [
+        *RSYNC,
+        *(['--delete'] if final else []),
+        *(['--checksum'] if again else []),
+        *excluded(skip),
+        f'{source}/',
+        f'{target}/',
+    ]
     if final:
         out('Copying what changed (the apps are stopped)...')
     elif again:
@@ -305,10 +325,25 @@ def copy(source, target, final=False, out=print, again=False):
         raise RuntimeError(f'The copy stopped (rsync exit code {done.returncode}); the old drive is unchanged')
 
 
-def differences(source, target):
+def excluded(skip):
+    """rsync's words for names at the top of the copy left out (and kept at the target)."""
+    return [f'--exclude=/{name}' for name in skip]
+
+
+def differences(source, target, skip=()):
     """Every file compared by checksum: what differs (empty when the copy is exact)."""
     shown = run(
-        [*RSYNC, '--delete', '--checksum', '--dry-run', '--itemize-changes', f'{source}/', f'{target}/'], check=False
+        [
+            *RSYNC,
+            '--delete',
+            '--checksum',
+            '--dry-run',
+            '--itemize-changes',
+            *excluded(skip),
+            f'{source}/',
+            f'{target}/',
+        ],
+        check=False,
     )
     if shown.returncode != 0:
         return [f'the comparison stopped (rsync exit code {shown.returncode})']
@@ -379,6 +414,8 @@ def nekoserver_units(states='active'):
 
 
 AT_WORK = 'activating,deactivating,reloading'
+# Running, or at work: what is still there after a stop.
+UP_OR_AT_WORK = 'active,' + AT_WORK
 TIMER = '.timer'
 # How long a job at work is waited for once the timers are stopped: the dashboard's
 # collector, the phone alerts and the heartbeat run every minute for a few seconds (the
@@ -388,11 +425,40 @@ TIMER = '.timer'
 SHORT_JOBS_WAIT = 200
 
 
-def jobs_at_work(out=print, sleep=time.sleep, wait=SHORT_JOBS_WAIT):
-    """NekoServer's services at work (not timers), once short ones had `wait` seconds to end."""
+# NekoServer's services that write none of its data: one of them at work (a gateway
+# waiting for its address, the dashboard's collector) never holds a move up. Any other
+# service of NekoServer's at work does, one not named here too (a backup, an update, a
+# card, the media folders, a Drives job of someone else's, a unit added later).
+QUIET = frozenset(
+    {
+        'nekoserver-dashboard.service',
+        'nekoserver-dashboard-collect.service',
+        'nekoserver-control.service',
+        'nekoserver-gateway-lan.service',
+        'nekoserver-openrgb.service',
+        'nekoserver-openrgb-proxy.service',
+        'nekoserver-notifications.service',
+        'nekoserver-heartbeat.service',
+        'nekoserver-nas-watch.service',
+        'nekoserver-hdd-policy.service',
+        'nekoserver-media-health.service',
+        'nekoserver-update-check.service',
+        'nekoserver-system-check.service',
+    }
+)
+
+
+def at_work_now(own=()):
+    """The services at work that a move must wait for: not timers, not QUIET ones, and
+    not `own`, the units of the job asking (a Drives job's oneshot is at work itself)."""
+    return [u for u in nekoserver_units(AT_WORK) if not u.endswith(TIMER) and u not in QUIET and u not in own]
+
+
+def jobs_at_work(out=print, sleep=time.sleep, wait=SHORT_JOBS_WAIT, own=()):
+    """NekoServer's services at work (at_work_now), once short ones had `wait` seconds to end."""
     waited = 0
     while True:
-        busy = [u for u in nekoserver_units(AT_WORK) if not u.endswith(TIMER)]
+        busy = at_work_now(own)
         if not busy or waited >= wait:
             return busy
         if waited == 0:
@@ -401,29 +467,34 @@ def jobs_at_work(out=print, sleep=time.sleep, wait=SHORT_JOBS_WAIT):
         waited += 5
 
 
-def stop_writers(journal=JOURNAL, out=print, sleep=time.sleep):
+def stop_writers(journal=JOURNAL, out=print, sleep=time.sleep, note=None, own=()):
     """Everything that writes to the drives stops; what ran is noted to start again. The
     timers go first, so no job starts meanwhile; a job already at work (a backup worker,
     a oneshot service: "activating") is given a few minutes to end, then stops the move
-    rather than being cut off half-way."""
+    rather than being cut off half-way. `note(stopped)`: where that is written down (this
+    move's journal unless named: the dashboard's storage jobs keep their own). `own`: the
+    units of the job asking, never waited for, stopped or counted."""
+    note = note or (lambda stopped: record(journal, phase='stopped', stopped=stopped))
     timers = [u for u in nekoserver_units() if u.endswith(TIMER)]
-    record(journal, phase='stopped', stopped=timers)
+    note(timers)
     for unit in timers:
         run(['systemctl', 'stop', unit], 600, check=False)
     # A timer still active would start a backup during the quiet copy and the switch
     # (the review of 0.47.9: a stop that failed was passed over).
-    ticking = [u for u in nekoserver_units('active,' + AT_WORK) if u.endswith(TIMER)]
+    ticking = [u for u in nekoserver_units(UP_OR_AT_WORK) if u.endswith(TIMER)]
     if ticking:
         raise RuntimeError('These did not stop: ' + ', '.join(ticking))
-    busy = jobs_at_work(out, sleep)
+    busy = jobs_at_work(out, sleep, own=own)
     if busy:
         raise RuntimeError(', '.join(busy) + ' is at work (a backup or another job); try again once it has finished')
-    rest = active(WRITERS) + [u for u in nekoserver_units() if not u.endswith(TIMER)]
+    # What is left at work is QUIET (the check above): stopped too, and started again after.
+    running = [u for u in nekoserver_units(UP_OR_AT_WORK) if not u.endswith(TIMER) and u not in own]
+    rest = list(dict.fromkeys(active(WRITERS) + running))
     stopped = timers + rest
-    record(journal, phase='stopped', stopped=stopped)
+    note(stopped)
     for unit in rest:
         run(['systemctl', 'stop', unit], 600, check=False)
-    still = active(WRITERS) + [u for u in nekoserver_units('active,' + AT_WORK) if not u.endswith(TIMER)]
+    still = active(WRITERS) + [u for u in nekoserver_units(UP_OR_AT_WORK) if not u.endswith(TIMER) and u not in own]
     if still:
         raise RuntimeError('These did not stop: ' + ', '.join(still))
     return stopped

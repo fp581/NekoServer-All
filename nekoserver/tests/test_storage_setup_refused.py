@@ -1,0 +1,552 @@
+"""T1-9 and T1-10 (1.0.1 VM drill 4): a move whose setup run refused the new place.
+
+The photos were moved to an Extra drive and the settings switched, then setup refused:
+Immich's .env still named the old folder ("Existing Immich paths differ"). The job ended
+half: the settings and the copy on the new drive, Immich on the old folder, and a journal
+that neither the start of the computer nor a new job could clear. Now:
+
+- setup run again for a move takes the place the move left for the one the settings
+  name now, in every app's own record of its folders (Immich's .env, Nextcloud's
+  recorded settings), so it changes them instead of refusing; the media apps' Compose
+  files are setup's own and are written again, and the drives check (same_place) takes
+  the old folder that is still there;
+- a setup run that still fails after the switch undoes the move ("unswitch"): what the
+  apps wrote in the new place is copied back, the settings name the old place again, the
+  new copy goes, setup runs again for the old place, and the job ends "failed" with the
+  reason and no journal; a power cut in the middle goes on with it at the next start;
+- the dashboard keeps its port: its socket stays up through the move (stopping it
+  stopped the page with it), and a port only closed connections are waiting on is free."""
+
+import json
+import os
+import re
+import socket
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+import storage_jobs  # noqa: E402
+from modules import dashboard, nextcloud, photos, storage  # noqa: E402
+from tests.test_storage_jobs import ID, Jobs, last_result, saved_journal  # noqa: E402
+
+REFUSED = 'FAILED photos: Existing Immich paths differ'
+# The real one: the jobs' fixture replaces it with a fake for every test.
+REAL_SETUP_AGAIN = storage_jobs.setup_again
+
+
+def setup_log(*lines, finished=True):
+    """A setup run's log as installer.py writes it: its step lines, then the last line."""
+    said = [f'[2026-11-24 22:00:0{n % 10}] {line}' for n, line in enumerate(lines)]
+    return '\n'.join([*said, *(['[2026-11-24 22:01:00] Finished: 30 of 32 steps done'] if finished else [])]) + '\n'
+
+
+class Refusing:
+    """Setup run again: refuses (raises) or works, in turn, with its log (setup-<id>.log);
+    what the apps write meanwhile. An answer is None (works), the error (its log: that
+    step FAILED), or (the error, the log)."""
+
+    def __init__(self, test, *answers, writes=None):
+        self.test, self.answers, self.writes = test, list(answers), writes or {}
+
+    def __call__(self, job):
+        self.test.setups.append(json.loads(json.dumps(job.config)))
+        for path, text in self.writes.items():
+            (self.test.root / path).parent.mkdir(parents=True, exist_ok=True)
+            (self.test.root / path).write_text(text)
+        self.writes = {}
+        answer = self.answers.pop(0)
+        error, log = answer if isinstance(answer, tuple) else (answer, None)
+        if log is None:
+            log = setup_log(*(f'FAILED {step}: no' for step in re.findall(r'FAILED ([a-z_]+)', error or '')))
+        (job.state / f'setup-{job.id}.log').write_text(log)
+        if error:
+            raise RuntimeError(error)
+
+
+class UnswitchTests(Jobs):
+    def refusing(self, *answers, writes=None):
+        return mock.patch.object(storage_jobs, 'setup_again', Refusing(self, *answers, writes=writes))
+
+    def test_a_move_setup_refuses_is_undone_and_ends_failed_with_the_reason(self):
+        self.files(self.root / 'ssd/photos/immich-library', **{'a/x.jpg': 'one'})
+        late = {'drives/d3/photos/immich-library/late.jpg': 'taken meanwhile'}
+        with self.refusing(REFUSED, None, writes=late):
+            self.assertEqual(self.run_job('move', kind='photos', to='d3'), 1)
+        self.assertEqual((self.root / 'ssd/photos/immich-library/a/x.jpg').read_text(), 'one')
+        self.assertEqual((self.root / 'ssd/photos/immich-library/late.jpg').read_text(), 'taken meanwhile')
+        self.assertEqual([p for p in (self.root / 'drives/d3').rglob('*') if not p.is_dir()], [])
+        self.assertEqual([s['locations'] for s in self.setups], [{'photos': 'd3'}, {}])
+        for index in (0, 1):
+            self.assertEqual(self.saved(index)['locations'], {})
+        result = last_result(self.root)
+        self.assertEqual(result['state'], 'failed')
+        self.assertIn('stay on Apps drive', result['message'])
+        self.assertIn(REFUSED, result['message'])
+        self.assertIn('Nothing was changed', result['message'])
+        self.assertIsNone(saved_journal(self.root))
+        self.assertEqual(self.started[-1], ['nekoserver-immich.service'])
+
+    def test_a_second_refusal_still_leaves_the_old_state_and_no_journal(self):
+        self.files(self.root / 'ssd/photos/immich-library', **{'x.jpg': 'one'})
+        with self.refusing(REFUSED, 'FAILED gateway_lan: no address'):
+            self.assertEqual(self.run_job('move', kind='photos', to='media'), 1)
+        self.assertEqual((self.root / 'ssd/photos/immich-library/x.jpg').read_text(), 'one')
+        self.assertFalse((self.root / 'media/photos/immich-library').exists())
+        self.assertEqual(self.saved()['locations'], {})
+        self.assertIn('no address', last_result(self.root)['message'])
+        self.assertIsNone(saved_journal(self.root))
+
+    def test_a_new_job_is_taken_after_a_refused_move(self):
+        self.files(self.root / 'ssd/photos/immich-library', **{'x.jpg': 'one'})
+        with self.refusing(REFUSED, None):
+            self.run_job('move', kind='photos', to='media')
+        self.assertEqual(self.run_job('move', kind='photos', to='media'), 0)
+        self.assertEqual(self.saved()['locations'], {'photos': 'media'})
+
+    def test_backups_retired_before_setup_come_back_when_it_refuses(self):
+        self.files(self.root / 'media', **{'backups/host.tar': 'h', 'photos/archive/2020.zip': 'z'})
+        with (
+            self.refusing('FAILED storage: the backups folder is not mounted', None),
+            mock.patch.object(storage_jobs, 'unbind_backups') as unbind,
+        ):
+            self.assertEqual(self.run_job('move', kind='backups', to='d3'), 1)
+        self.assertEqual((self.root / 'media/backups/host.tar').read_text(), 'h')
+        self.assertEqual((self.root / 'media/photos/archive/2020.zip').read_text(), 'z')
+        self.assertFalse((self.root / f'media/nekoserver-old-backups-{ID}').exists())
+        self.assertEqual([p for p in (self.root / 'drives/d3').rglob('*') if not p.is_dir()], [])
+        self.assertEqual(unbind.call_args[0][0]['locations'], {'backups': 'd3'})
+        self.assertEqual(self.saved()['locations'], {})
+
+    def test_going_back_to_an_old_copy_that_setup_refuses_keeps_that_old_copy(self):
+        self.config['locations'] = {'photos': 'media'}
+        self.files(self.root / 'media/photos/immich-library', **{'x.jpg': 'now'})
+        old = self.root / 'ssd/nekoserver-old-photos-fedcba9876543210/photos/immich-library'
+        self.files(old, **{'x.jpg': 'before'})
+        with self.refusing(REFUSED, None):
+            self.assertEqual(self.run_job('back', kind='photos', copy='fedcba9876543210'), 1)
+        self.assertEqual((self.root / 'media/photos/immich-library/x.jpg').read_text(), 'now')
+        self.assertTrue(old.is_dir())
+        self.assertEqual(self.saved()['locations'], {'photos': 'media'})
+
+    def test_a_power_cut_while_undoing_goes_on_with_it_at_the_next_start(self):
+        self.files(self.root / 'ssd/photos/immich-library', **{'x.jpg': 'one'})
+        self.files(self.root / 'media/photos/immich-library', **{'x.jpg': 'one', 'late.jpg': 'meanwhile'})
+        self.config['locations'] = {'photos': 'media'}
+        job = storage_jobs.Job(
+            self.request('move', kind='photos', to='media'), self.config, self.settings, self.root / 'state'
+        )
+        job.journal(
+            'unswitch',
+            True,
+            staging=str(self.root / f'media/nekoserver-new-photos-{ID}'),
+            here='ssd',
+            to='media',
+            change=[['locations', 'photos', None]],
+            why=REFUSED,
+        )
+        with mock.patch.object(storage_jobs, 'run', mock.Mock()):
+            self.assertEqual(storage_jobs.resume(self.config, self.settings, self.root / 'state', self.root / 'run'), 0)
+        # Before Docker (resume): the files are back at the old place and the settings too.
+        self.assertEqual(self.saved()['locations'], {})
+        self.assertEqual((self.root / 'ssd/photos/immich-library/late.jpg').read_text(), 'meanwhile')
+        self.assertFalse((self.root / 'media/photos/immich-library').exists())
+        self.assertTrue(saved_journal(self.root)['undo']['files_back'])
+        # Docker starts the apps, on the old place: what they write there is kept by the finish.
+        self.files(self.root / 'ssd/photos/immich-library', **{'after-boot.jpg': 'taken after the start'})
+        self.assertEqual(storage_jobs.finish(self.config, self.settings, self.root / 'state', self.root / 'run'), 1)
+        self.assertEqual((self.root / 'ssd/photos/immich-library/after-boot.jpg').read_text(), 'taken after the start')
+        self.assertEqual((self.root / 'ssd/photos/immich-library/late.jpg').read_text(), 'meanwhile')
+        self.assertEqual(self.setups[-1]['locations'], {})
+        self.assertEqual(last_result(self.root)['state'], 'failed')
+        self.assertIsNone(saved_journal(self.root))
+
+    GATEWAY = 'setup ended with a failed step (FAILED gateway_lan: no address)'
+
+    def test_a_failure_of_a_step_that_does_not_use_the_place_finishes_the_move(self):
+        self.files(self.root / 'ssd/photos/immich-library', **{'x.jpg': 'one'})
+        log = setup_log(
+            'PASS storage',
+            'PASS docker',
+            'PASS photos',
+            'UNAVAILABLE photo_backup: no USB drive',
+            'FAILED gateway_lan: no',
+        )
+        with self.refusing((self.GATEWAY, log)):
+            self.assertEqual(self.run_job('move', kind='photos', to='d3'), 0)
+        self.assertEqual((self.root / 'drives/d3/photos/immich-library/x.jpg').read_text(), 'one')
+        self.assertTrue((self.root / f'ssd/nekoserver-old-photos-{ID}/photos/immich-library/x.jpg').exists())
+        self.assertEqual(self.saved()['locations'], {'photos': 'd3'})
+        result = last_result(self.root)
+        self.assertEqual(result['state'], 'done')
+        self.assertIn('gateway_lan: no address', result['message'])
+        self.assertIn('Run setup again', result['advice'])
+        self.assertIsNone(saved_journal(self.root))
+        self.assertEqual(self.started, [['nekoserver-immich.service']])
+
+    def test_the_result_says_how_long_the_apps_were_paused(self):
+        self.files(self.root / 'ssd/photos/immich-library', **{'x.jpg': 'one'})
+        self.assertEqual(self.run_job('move', kind='photos', to='media'), 0)
+        self.assertIsInstance(last_result(self.root)['paused_seconds'], int)
+
+    def test_the_finish_after_docker_holds_the_operation_lock(self):
+        import fcntl
+
+        job = storage_jobs.Job(
+            self.request('move', kind='photos', to='media'), self.config, self.settings, self.root / 'state'
+        )
+        job.journal('start', True, staging='x', here='ssd', to='media', change=[['locations', 'photos', 'media']])
+        with open(self.root / 'operation.lock', 'a') as held:
+            fcntl.flock(held, fcntl.LOCK_EX)
+            waited = []
+            finished = storage_jobs.finish(
+                self.config, self.settings, self.root / 'state', self.root / 'run', sleep=waited.append
+            )
+            self.assertEqual(finished, 1)
+        self.assertEqual(sum(waited), 10 * storage_jobs.FINISH_LOCK_TRIES)
+        self.assertEqual(self.setups, [])
+        self.assertIsNotNone(saved_journal(self.root))
+        self.assertIn('next start', last_result(self.root)['advice'])
+
+    def test_a_kind_step_the_run_held_up_or_never_reached_undoes_the_move(self):
+        self.files(self.root / 'ssd/photos/immich-library', **{'x.jpg': 'one'})
+        for log in (
+            setup_log('PASS storage', 'FAILED docker: an image did not download', 'BLOCKED photos: waits on docker'),
+            setup_log('PASS storage', 'FAILED gateway_lan: no', 'START photos', finished=False),
+        ):
+            with self.subTest(log=log), self.refusing((self.GATEWAY, log), None):
+                self.assertEqual(self.run_job('move', kind='photos', to='d3'), 1)
+                self.assertEqual(self.saved()['locations'], {})
+                self.assertEqual((self.root / 'ssd/photos/immich-library/x.jpg').read_text(), 'one')
+                self.assertEqual(last_result(self.root)['state'], 'failed')
+
+    def test_which_runs_refuse_the_place(self):
+        job = SimpleNamespace(state=self.root / 'state', id=ID)
+
+        def refused(kind, *lines, finished=True):
+            (self.root / f'state/setup-{ID}.log').write_text(setup_log(*lines, finished=finished))
+            return storage_jobs.refused_place(job, kind)
+
+        self.assertTrue(refused('photos', 'PASS storage', 'FAILED photos: Existing Immich paths differ'))
+        self.assertTrue(refused('movies', 'FAILED gateway_lan: x', 'FAILED media: y'))
+        self.assertTrue(refused('cloud', 'FAILED storage: the drive is not mounted'))
+        self.assertTrue(refused('music', 'PASS storage', 'PASS media', finished=False))
+        self.assertFalse(refused('photos', 'PASS photos', 'NEEDS SETUP photo_backup: plug in the USB drive'))
+        self.assertFalse(refused('backups', 'PASS app_backup', 'NEEDS SETUP backup_cards: no card in'))
+        # A step that points an app at its folders may wait for the person before it wrote them.
+        for kind, step in (
+            ('photos', 'photos'),
+            ('cloud', 'nextcloud'),
+            ('movies', 'media'),
+            ('music', 'samba'),
+            ('backups', 'storage'),
+            ('photos', 'docker'),
+        ):
+            with self.subTest(step=step):
+                self.assertTrue(refused(kind, 'PASS storage', f'NEEDS SETUP {step}: sign in first'))
+        self.assertFalse(
+            refused('photos', 'PASS storage', 'PASS photos', 'FAILED gateway_tailnet: x', 'FAILED heartbeat: y')
+        )
+        self.assertFalse(refused('cloud', 'PASS storage', 'PASS nextcloud', 'FAILED media: an image did not download'))
+        # A run of an earlier attempt in the same log does not count: the last line of each step does.
+        self.assertFalse(refused('photos', 'FAILED photos: x', 'PASS storage', 'PASS photos', 'FAILED gateway_lan: x'))
+        (self.root / f'state/setup-{ID}.log').unlink()
+        self.assertTrue(storage_jobs.refused_place(job, 'photos'))
+
+
+class MovedHereTests(unittest.TestCase):
+    """What setup run again reads of the job (storage_jobs.moved_here)."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
+        for name in ('ssd', 'media', 'drives/d3', 'state'):
+            (self.root / name).mkdir(parents=True)
+        self.config = {
+            'data_mount': str(self.root / 'ssd'),
+            'media_mount': str(self.root / 'media'),
+            'storage': {'data_ssd': {'uuid': 's'}, 'media_hdd': {'uuid': 'h'}, 'd3': {'uuid': 'd3-uuid'}},
+            'locations': {},
+        }
+        for patch in (
+            mock.patch('neko_common.EXTRA_MOUNTS', self.root / 'drives'),
+            mock.patch.object(storage_jobs, 'STATE', self.root / 'state'),
+        ):
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def moving(self, kind, here, to, phase='start', committed=True, job='move'):
+        self.config['locations'][kind] = to if phase == 'start' else here
+        request = {'format': storage_jobs.FORMAT, 'id': ID, 'job': job, 'kind': kind, 'to': to}
+        storage_jobs.Job(request, self.config, [], self.root / 'state').journal(phase, committed, here=here, to=to)
+
+    def drive(self, name):
+        return self.root / {'ssd': 'ssd', 'media': 'media'}.get(name, f'drives/{name}')
+
+    def test_only_a_committed_move_of_that_kind_whose_settings_name_its_new_place(self):
+        self.assertIsNone(storage_jobs.moved_here(self.config, 'photos'))
+        self.moving('photos', 'ssd', 'd3')
+        self.assertEqual(storage_jobs.moved_here(self.config, 'photos'), (self.drive('ssd'), self.drive('d3')))
+        self.assertIsNone(storage_jobs.moved_here(self.config, 'cloud'))
+        self.config['locations']['photos'] = 'media'
+        self.assertIsNone(storage_jobs.moved_here(self.config, 'photos'))
+        self.moving('photos', 'ssd', 'd3', phase='switch', committed=False)
+        self.assertIsNone(storage_jobs.moved_here(self.config, 'photos'))
+
+    def test_while_a_move_is_undone_the_other_way_round(self):
+        self.moving('cloud', 'media', 'd3', phase='unswitch')
+        self.assertEqual(storage_jobs.moved_here(self.config, 'cloud'), (self.drive('d3'), self.drive('media')))
+
+    # ---- Immich: its .env names the folder --------------------------------------------------
+
+    def env(self, upload):
+        env = self.root / 'ssd/compose/immich/.env'
+        env.parent.mkdir(parents=True, exist_ok=True)
+        db = self.root / 'ssd/appdata/immich/postgres'
+        env.write_text(f'UPLOAD_LOCATION={upload}\nDB_DATA_LOCATION={db}\nIMMICH_VERSION=v2.1.0\nTZ=UTC\n')
+        env.chmod(0o600)
+        return env, db
+
+    def immich_check(self, env, db, said):
+        """What setup's photos step does with an existing .env (_run, then checked_env)."""
+        upload = photos.photo_library(self.config)
+        with mock.patch.object(photos, 'ROOT_UID', os.getuid()):
+            photos.follow_drives_move(env, upload, self.config, said.append)
+            return photos.checked_env(env, upload, db)
+
+    def test_immich_follows_a_move_of_the_photos(self):
+        for here, to in (('ssd', 'd3'), ('ssd', 'media'), ('d3', 'ssd')):
+            with self.subTest(here=here, to=to):
+                env, db = self.env(self.drive(here) / 'photos/immich-library')
+                self.moving('photos', here, to)
+                said = []
+                content = self.immich_check(env, db, said)
+                self.assertIn(f'UPLOAD_LOCATION={self.drive(to)}/photos/immich-library', content.splitlines())
+                self.assertIn('IMMICH_VERSION=v2.1.0', content.splitlines())
+                self.assertEqual(env.stat().st_mode & 0o777, 0o600)
+                self.assertIn('moved from the Drives page', said[0])
+
+    def test_immich_still_refuses_settings_changed_by_hand(self):
+        env, db = self.env(self.drive('ssd') / 'photos/immich-library')
+        self.config['locations']['photos'] = 'd3'
+        with self.assertRaisesRegex(RuntimeError, 'Existing Immich paths differ'):
+            self.immich_check(env, db, [])
+        # A move of another kind, or one from another folder than the .env names: refused too.
+        self.moving('music', 'ssd', 'd3')
+        with self.assertRaisesRegex(RuntimeError, 'Existing Immich paths differ'):
+            self.immich_check(env, db, [])
+        env, db = self.env(self.root / 'elsewhere/immich-library')
+        self.moving('photos', 'ssd', 'd3')
+        with self.assertRaisesRegex(RuntimeError, 'Existing Immich paths differ'):
+            self.immich_check(env, db, [])
+
+    # ---- Nextcloud: its recorded settings name the drive ---------------------------------------
+
+    def nextcloud_check(self, recorded_drive):
+        """setup's Nextcloud step on an installed Nextcloud (brought_up_to_date)."""
+        folder = self.root / 'ssd/compose/nextcloud'
+        folder.mkdir(parents=True, exist_ok=True)
+        manifest, managed = folder / 'compose.yaml', folder / 'managed.json'
+        self.config['nextcloud'] = {'admin_user': 'admin'}
+        moved = dict(self.config, locations={**self.config['locations'], 'cloud': recorded_drive})
+        if recorded_drive == 'media':
+            moved['locations'].pop('cloud')
+        image = 'nextcloud:31.0.0-apache'
+        owned = {'image': image, 'model': nextcloud.model(moved, image), 'settings': nextcloud.settings(moved, image)}
+        managed.write_text(json.dumps(owned))
+        manifest.write_text(json.dumps(owned['model']))
+        said = []
+        nextcloud.brought_up_to_date(
+            SimpleNamespace(config=self.config, log=said.append), owned, image, (manifest, managed)
+        )
+        return json.loads(managed.read_text()), said
+
+    def test_nextcloud_follows_a_move_of_its_files(self):
+        self.moving('cloud', 'media', 'd3')
+        written, said = self.nextcloud_check('media')
+        self.assertEqual(written['settings']['media_mount'], str(self.drive('d3')))
+        self.assertEqual(written['model'], nextcloud.model(self.config, 'nextcloud:31.0.0-apache'))
+        self.assertTrue(any('moved from the Drives page' in line for line in said))
+
+    def test_nextcloud_still_refuses_settings_changed_by_hand(self):
+        self.config['locations']['cloud'] = 'd3'
+        with self.assertRaisesRegex(RuntimeError, 'media_mount'):
+            self.nextcloud_check('media')
+
+    # ---- the drives check and the media apps' own files ------------------------------------
+
+    def test_the_drives_check_takes_a_moved_kind_whose_old_folder_is_still_there(self):
+        # Setup checks the two drives only (an Extra drive is taken as chosen); the old
+        # folders are renamed out of the way after it ran.
+        for kind, folder, here, to in (
+            ('movies', 'library/movies', 'media', 'ssd'),
+            ('music', 'library/music', 'ssd', 'media'),
+            ('cloud', 'cloud/files', 'media', 'ssd'),
+            ('photos', 'photos/immich-library', 'ssd', 'media'),
+        ):
+            with self.subTest(kind=kind):
+                for place in (here, to):
+                    (self.drive(place) / folder).mkdir(parents=True, exist_ok=True)
+                    (self.drive(place) / folder / 'a.file').write_text('a')
+                self.moving(kind, here, to)
+                said = []
+                kept = storage.kept_location(self.config, kind)
+                storage.same_place(SimpleNamespace(log=said.append, config=self.config), kind, kind, to, kept)
+                self.assertIn('used from', said[0])
+
+    def test_the_media_apps_compose_files_are_setups_own_and_written_again_for_the_new_place(self):
+        from modules import media
+
+        folder = self.root / 'ssd/compose/jellyfin'
+        folder.mkdir(parents=True)
+        dest = folder / 'compose.yaml'
+        template = (Path(media.__file__).resolve().parents[1] / 'compose' / 'jellyfin.yaml').read_text()
+        before = media.render(template, self.root / 'ssd', self.drive('media'), 1000, 1000, 'UTC', '127.0.0.1')
+        dest.write_text(before)
+        media.remember(dest, before)
+        after = media.render(template, self.root / 'ssd', self.drive('d3'), 1000, 1000, 'UTC', '127.0.0.1')
+        self.assertNotEqual(before, after)
+        backup, current = media.replacement(dest, after)
+        self.assertEqual(current, before)
+
+
+class ImmichComposeCheckTests(MovedHereTests):
+    def test_the_runtime_is_told_the_extra_drives_the_settings_place_files_on(self):
+        # T1-11: the films moved to an Extra drive; setup's photos step checks Immich's
+        # Compose file with the runtime, which allows a folder only on a drive it is told of.
+        self.config['locations'] = {'movies': 'd3'}
+        self.config['storage']['d3']['fstype'] = 'ext4'
+        given = {}
+
+        def ask(root, config, args):
+            given.update(json.loads(Path(args[args.index('--config') + 1]).read_text()))
+            return 1, 'stop here'
+
+        with self.assertRaises(RuntimeError):
+            photos.checked_model({}, Path('/x'), Path('/y'), self.config, ask=ask)
+        self.assertEqual(given['storage']['d3']['uuid'], 'd3-uuid')
+        self.assertEqual(given['locations'], {'movies': 'd3'})
+        self.assertEqual(given['paths']['library'], str(self.drive('d3') / 'library'))
+
+
+class DashboardPortTests(unittest.TestCase):
+    def test_the_dashboard_socket_stays_up_through_a_move(self):
+        self.assertIn(dashboard.SOCKET, storage_jobs.left_alone())
+        self.assertIn(dashboard.SERVICE, storage_jobs.left_alone())
+        self.assertIn(dashboard.CONTROL, storage_jobs.left_alone())
+
+    def test_a_port_only_closed_connections_wait_on_is_free(self):
+        with socket.socket() as server:
+            server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            server.bind(('127.0.0.1', 0))
+            port = server.getsockname()[1]
+            server.listen()
+            client = socket.create_connection(('127.0.0.1', port))
+            accepted, _ = server.accept()
+            self.assertFalse(dashboard.port_free(port))  # a program listening on it
+            accepted.close()  # the server's side closes first: it waits in TIME_WAIT
+            client.close()
+        self.assertTrue(dashboard.port_free(port))
+
+
+class FolderModeTests(Jobs):
+    """The storage unit's UMask=0077 (T4's real move on Tumbleweed: films moved to an Extra
+    drive, Sonarr's and Radarr's root folders inaccessible behind a 0700 library/)."""
+
+    def test_the_new_parent_folders_take_the_old_ones_mode_not_the_units_umask(self):
+        self.files(self.root / 'media/library/movies', **{'film.mkv': 'x'})
+        os.chmod(self.root / 'media/library', 0o755)
+        before = os.umask(0o077)
+        try:
+            with mock.patch.object(storage_jobs, 'setup_again', Refusing(self, None)):
+                self.assertEqual(self.run_job('move', kind='movies', to='d3'), 0)
+        finally:
+            os.umask(before)
+        self.assertEqual((self.root / 'drives/d3/library/movies/film.mkv').read_text(), 'x')
+        self.assertEqual((self.root / 'drives/d3/library').stat().st_mode & 0o777, 0o755)
+
+    def test_a_parent_folder_with_none_at_the_old_place_takes_the_mode_of_the_one_above_it(self):
+        here, to = self.root / 'media', self.root / 'drives/d3'
+        for mode in (0o755, 0o750):
+            with self.subTest(mode=oct(mode)):
+                to.mkdir(parents=True, exist_ok=True)
+                os.chmod(to, mode)
+                before = os.umask(0o077)
+                try:
+                    storage_jobs.parents_like(to / 'photos/archive/x', here, to)
+                finally:
+                    os.umask(before)
+                for folder in (to / 'photos', to / 'photos/archive'):
+                    self.assertEqual(folder.stat().st_mode & 0o777, mode)
+                self.assertFalse((to / 'photos/archive/x').exists())
+                self.assertEqual(sorted(p.name for p in to.iterdir()), ['photos'])
+                (to / 'photos/archive').rmdir()
+                (to / 'photos').rmdir()
+
+    def test_a_parent_folder_has_its_name_only_once_it_has_its_mode(self):
+        here, to = self.root / 'media', self.root / 'drives/d3'
+        to.mkdir(parents=True, exist_ok=True)
+        os.chmod(to, 0o755)
+        (to / '.photos.making').mkdir()  # left by a power cut
+        renamed, rename = [], os.rename
+
+        def watched(source, target):
+            renamed.append((Path(source).stat().st_mode & 0o777, Path(target).exists()))
+            rename(source, target)
+
+        before = os.umask(0o077)
+        try:
+            with mock.patch.object(storage_jobs.os, 'rename', watched):
+                storage_jobs.parents_like(to / 'photos/archive/x', here, to)
+        finally:
+            os.umask(before)
+        self.assertEqual(renamed, [(0o755, False), (0o755, False)])
+        self.assertEqual(sorted(p.name for p in to.iterdir()), ['photos'])
+
+    def test_setup_run_again_by_a_job_runs_with_the_systems_umask(self):
+        import migrate
+
+        status = self.root / 'login.defs'
+        job = SimpleNamespace(
+            state=self.root / 'state', id=ID, config=self.config, settings_files=self.settings, out=print
+        )
+        for said, wanted in (
+            ('UMASK\t\t022\n', 0o022),
+            ('UMASK 027\n', 0o027),
+            ('UMASK\t002\n', 0o077),  # the group could write: not taken
+            ('UMASK 000\n', 0o077),
+            ('#UMASK 022\n', 0o077),
+            (None, 0o077),
+        ):
+            with self.subTest(said=said):
+                status.unlink(missing_ok=True)
+                if said:
+                    status.write_text('# login settings\nPASS_MAX_DAYS\t99999\n' + said + 'USERGROUPS_ENAB yes\n')
+                seen = []
+
+                def setup(*args, **kwargs):
+                    mask = os.umask(0o077)
+                    os.umask(mask)
+                    seen.append(mask)
+
+                before = os.umask(0o077)
+                try:
+                    with (
+                        mock.patch.object(migrate, 'setup_again', setup),
+                        mock.patch.object(storage_jobs, 'LOGIN_DEFS', (self.root / 'etc-none', status)),
+                    ):
+                        REAL_SETUP_AGAIN(job)
+                    after = os.umask(before)
+                finally:
+                    os.umask(before)
+                self.assertEqual(seen, [wanted])
+                self.assertEqual(after, 0o077)
+
+
+if __name__ == '__main__':
+    unittest.main()

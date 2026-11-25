@@ -305,7 +305,55 @@ fn mount_info(path: &Path, expected: Option<&str>, fstype: &str) -> Value {
         // missing, and every backup blocked, each time a copy kept the drive busy).
         Err(_) => common::mount_table_entry(path).unwrap_or_default(),
     };
+    if dead_mount(&s, &Path::exists) {
+        return json!({"status":"missing"});
+    }
     mount_status(&s, expected, fstype)
+}
+/// T1-19: a drive pulled while the server runs leaves its mount behind, on a device that
+/// is gone. findmnt then has no UUID for it, and the page said another drive was mounted
+/// in its place; it is away. `found`: findmnt's "UUID FSTYPE SOURCE" line.
+fn dead_mount(found: &str, exists: &dyn Fn(&Path) -> bool) -> bool {
+    mount_fields(found).is_some_and(|(_, _, source)| {
+        let device = source.split('[').next().unwrap_or("");
+        device.starts_with("/dev/") && !exists(Path::new(device))
+    })
+}
+/// The apps with files or settings on the drive of storage row `key` (the media drive or
+/// a drive of its own): the kinds of data placed there (photos, films and shows, music,
+/// Nextcloud's files) and the apps installed there. Named while it is away (T1-19).
+fn apps_on_drive(cfg: &Value, key: &str) -> Vec<String> {
+    let place = match key {
+        "data_ssd" => "ssd",
+        "media_hdd" => "media",
+        other => other,
+    };
+    let Some(folder) = common::drive_folder(cfg, place) else {
+        return vec![];
+    };
+    let made = common::made_on(cfg, place);
+    let here = |kind: &str| {
+        common::files_root(cfg, kind).is_ok_and(|root| root == folder)
+            || made.iter().any(|m| m == kind)
+    };
+    common::SHARED["apps"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|app| {
+            let id = app["id"].as_str()?;
+            let groups = app["groups"].as_array().into_iter().flatten();
+            let kinds: Vec<&str> = if id == "nextcloud" {
+                vec!["cloud"]
+            } else {
+                groups
+                    .filter_map(Value::as_str)
+                    .filter(|g| ["photos", "movies", "music"].contains(g))
+                    .collect()
+            };
+            (kinds.into_iter().any(here) || cfg["installed"][id] == place).then(|| id.to_string())
+        })
+        .collect()
 }
 /// A drive's status from findmnt's "UUID FSTYPE SOURCE" line for its folder (`found`,
 /// empty when nothing is mounted there).
@@ -776,7 +824,7 @@ fn storage_rows(cfg: &Value) -> Result<Vec<DriveCard>> {
             saved("media_hdd", "fstype"),
         ),
     ];
-    for drive in common::drives_in_use(cfg) {
+    for drive in common::drives_watched(cfg) {
         if let Some(folder) = common::drive_folder(cfg, &drive) {
             let name = extra_drive_name(cfg, &drive);
             let (uuid, fs) = (saved(&drive, "uuid"), saved(&drive, "fstype"));
@@ -818,6 +866,9 @@ fn storage(cfg: &Value, cache: &mut Value, now: f64) -> Result<(Value, Vec<Value
         }
         if key == "media_hdd" {
             media_ok = answered;
+        }
+        if r["status"] != "mounted" && !["os", "data_ssd"].contains(&key) {
+            r["apps"] = json!(apps_on_drive(cfg, key));
         }
         disks.push(r)
     }
@@ -3189,18 +3240,36 @@ fn drive_alerts(out: &mut Alerts, s: &Value, held: &[&str]) -> bool {
             } else {
                 String::new()
             };
-        drive_state_alert(out, d, &stopped);
+        drive_state_alert(out, d, &stopped, &running_on(s, d).join(", "));
         drive_health_alert(out, d);
     }
     named
 }
+/// The apps still running with files on the away drive `d` (its "apps"), by name: pulled
+/// while the server ran, the apps on it kept running on what it left behind (T1-19).
+fn running_on<'a>(s: &'a Value, d: &Value) -> Vec<&'a str> {
+    let on_it = |id: &Value| d["apps"].as_array().is_some_and(|apps| apps.contains(id));
+    s["applications"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|a| a["state"] == "running" && on_it(&a["id"]))
+        .map(|a| text(&a["name"]))
+        .collect()
+}
 /// A drive that is away, has errors, waits, turned read-only or is filling up.
-/// `stopped`: the apps held while it is away, when its alert names them.
-fn drive_state_alert(out: &mut Alerts, d: &Value, stopped: &str) {
+/// `stopped`: the apps held while it is away, when its alert names them; `running`: the
+/// ones with files there that still run (T1-19), "" for none.
+fn drive_state_alert(out: &mut Alerts, d: &Value, stopped: &str, running: &str) {
     let id = text(&d["id"]);
     let name = text(&d["name"]);
     if d["status"] != "mounted" {
-        let detail = unavailable_detail(text(&d["status"]), stopped);
+        let mut detail = unavailable_detail(text(&d["status"]), stopped);
+        if !running.is_empty() {
+            detail.push_str(&format!(
+                " Without their files until it is back: {running}. They are restarted once it is."
+            ));
+        }
         out.add(
             format!("mount:{id}"),
             "critical",
@@ -3804,6 +3873,12 @@ pub fn run(a: &Args) -> Result<()> {
     result["battery"] = battery(Path::new("/sys/class/power_supply"));
     result["network_storage"] = network_storage(&cfg, Path::new("/sys/class/iscsi_session"));
     result["arrays"] = arrays;
+    // The Drives page (1.0.1): every disk and what it is to NekoServer.
+    result["disks"] = json!(crate::drives::disks(&cfg));
+    // Where each kind of data is, and the Drives page's job (storage.rs).
+    let storage = crate::storage::Storage::default();
+    result["data_kinds"] = json!(crate::storage::data_kinds(&cfg, &storage.look()));
+    result["storage_job"] = storage.job_with(&cfg);
     mark_held(&mut result);
     result["alerts"] = alerts(&result);
     // The readings are published even when the SSD can't keep the collector's own state
@@ -7104,12 +7179,66 @@ mod split_tests {
     fn filesystem_errors_are_said_from_the_first_one() {
         let said = |id: &str, errors: u64| {
             let d = json!({"id":id,"name":"App SSD","status":"mounted","fs_errors":errors});
-            alerts(|out| drive_state_alert(out, &d, ""))
+            alerts(|out| drive_state_alert(out, &d, "", ""))
                 .into_iter()
                 .any(|(_, title)| title.ends_with("has filesystem errors"))
         };
         assert!(said("data", 1));
         assert!(!said("data", 0));
         assert!(!said("os", 1));
+    }
+    /// T1-19: d3 pulled while the server runs. Its mount stays, on a device that is gone:
+    /// it reads as away (not "another drive in its place"), and the apps still running with
+    /// files there are named in its alert, not shown as fine.
+    #[test]
+    fn a_drive_pulled_while_the_server_runs_is_away_with_its_running_apps_named() {
+        let gone = |p: &Path| p != Path::new("/dev/sdc1");
+        assert!(dead_mount("     xfs /dev/sdc1", &gone));
+        assert!(dead_mount("abcd btrfs /dev/sdc1[/@]", &gone));
+        assert!(!dead_mount("abcd xfs /dev/sdd1", &gone));
+        assert!(!dead_mount("", &gone));
+        assert!(!dead_mount("nfs-1 nfs4 nas:/media", &gone));
+        let source = include_str!("collect.rs");
+        let info =
+            &source[source.find("fn mount_info(").unwrap()..source.find("fn dead_mount(").unwrap()];
+        assert!(info.contains("if dead_mount(&s, &Path::exists)"));
+        // An away drive's row names its apps (the page and its alert read them there).
+        let rows = &source[source.find("fn storage(cfg").unwrap()
+            ..source.find("pub(crate) fn drive_row(").unwrap()];
+        assert!(rows.contains("r[\"apps\"] = json!(apps_on_drive(cfg, key));"));
+        let cfg = json!({"data_mount": "/srv/nekoserver", "media_mount": "/mnt/nekoserver-media",
+            "storage": {"data_ssd": {"uuid": "a"}, "media_hdd": {"uuid": "b"}, "d3": {"uuid": "c"}},
+            "locations": {"movies": "d3"}, "installed": {"immich": "d3"}});
+        assert_eq!(
+            apps_on_drive(&cfg, "d3"),
+            ["jellyfin", "immich", "seerr", "sonarr", "radarr"]
+        );
+        // Music on the SSD and Nextcloud's files on the media drive, by default.
+        assert_eq!(apps_on_drive(&cfg, "media_hdd"), ["nextcloud"]);
+        // A folder the Media folders page made there counts as its kind does (part C).
+        let made = json!({"data_mount": "/srv/nekoserver", "media_mount": "/mnt/nekoserver-media",
+            "storage": {"data_ssd": {"uuid": "a"}, "media_hdd": {"uuid": "b"}, "d4": {"uuid": "d"}},
+            "placement": {"music": {"extra": [{"path": "/mnt/nekoserver-drives/d4/media/music", "made": "d4"}]}}});
+        assert_eq!(apps_on_drive(&made, "d4"), ["navidrome", "lidarr"]);
+        let rows = &source
+            [source.find("fn storage_rows(").unwrap()..source.find("fn storage(cfg").unwrap()];
+        assert!(rows.contains("common::drives_watched(cfg)"));
+        assert!(apps_on_drive(&cfg, "d4").is_empty());
+        let d = json!({"id": "d3", "name": "Extra drive d3", "status": "missing",
+            "apps": ["jellyfin", "immich", "radarr"]});
+        let s = json!({"storage": [d.clone()], "applications": [
+            {"id": "jellyfin", "name": "Jellyfin", "state": "running"},
+            {"id": "immich", "name": "Immich", "state": "running"},
+            {"id": "radarr", "name": "Radarr", "state": "exited"},
+            {"id": "navidrome", "name": "Navidrome", "state": "running"}]});
+        assert_eq!(running_on(&s, &d), ["Jellyfin", "Immich"]);
+        let mut out = Alerts(Vec::new());
+        drive_state_alert(&mut out, &d, "", "Jellyfin, Immich");
+        let said = text(&out.0[0]["detail"]).to_string();
+        assert!(
+            said.contains("Without their files until it is back: Jellyfin, Immich."),
+            "{said}"
+        );
+        assert!(!said.contains("Another drive is mounted"), "{said}");
     }
 }

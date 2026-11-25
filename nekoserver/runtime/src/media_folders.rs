@@ -231,6 +231,15 @@ pub fn plain_path(value: &str) -> bool {
             .all(|part| !part.is_empty() && part != "." && part != "..")
 }
 
+/// A drive's name as setup gives them (neko_common.DRIVE_NAME, common::extra_drive): d3, d4 ...
+fn drive_name(name: &str) -> bool {
+    name.len() <= 16
+        && name.starts_with(|c: char| c.is_ascii_lowercase())
+        && name
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+}
+
 /// The request as media_locations.py takes it: only the fields the change needs, each
 /// one of its fixed words (shared.json) or a plain path; Err(why) in the person's words.
 pub fn checked(request: &Value) -> std::result::Result<Value, &'static str> {
@@ -281,6 +290,26 @@ pub fn checked(request: &Value) -> std::result::Result<Value, &'static str> {
                 .ok_or("Which folder?")?;
             asked["slot"] = json!(slot);
         }
+        // "A folder on this Extra drive" (1.0.1, part C): the drive by its name (that it
+        // is one of this server's Extra drives, connected, is media_locations.py's to say).
+        "make" => {
+            let drive = request["drive"]
+                .as_str()
+                .filter(|d| drive_name(d))
+                .ok_or("Which Extra drive?")?;
+            let downloads = request["downloads"]
+                .as_bool()
+                .ok_or("Should new downloads go there?")?;
+            asked["drive"] = json!(drive);
+            asked["downloads"] = json!(downloads);
+            let backup = &request["backup"];
+            if !backup.is_null() && !backup.is_boolean() {
+                return Err("Should the music backup copy it too?");
+            }
+            if backup.is_boolean() && kind == "music" {
+                asked["backup"] = backup.clone();
+            }
+        }
         _ => {
             let target = request["target"]
                 .as_str()
@@ -292,7 +321,7 @@ pub fn checked(request: &Value) -> std::result::Result<Value, &'static str> {
     // The folder the page showed under that slot: a slot is given again to a folder added
     // after one was taken away, so a page left open on another device would change the
     // new one (media_locations.shown_there refuses that).
-    if change != "add" && !request["path"].is_null() {
+    if ["remove", "target"].contains(&change.as_str()) && !request["path"].is_null() {
         let shown = request["path"]
             .as_str()
             .filter(|p| plain_path(p))
@@ -337,16 +366,45 @@ fn under_roots(path: &str) -> bool {
 }
 /// NekoServer's own folders (and what is inside them): in use already, never offered.
 fn own_folders(cfg: &Value) -> Vec<String> {
-    ["data_mount", "media_mount", "external_backup_mount"]
+    let mut own: Vec<String> = ["data_mount", "media_mount", "external_backup_mount"]
         .iter()
         .filter_map(|key| cfg[*key].as_str())
         .filter(|p| p.starts_with('/') && *p != "/")
         .map(str::to_string)
-        .collect()
+        .collect();
+    // A kind of data the Drives page moved to an Extra drive (1.0.1): its folders there,
+    // as existing_media.own_on_drives refuses them (T3-101-2).
+    let backups = ["backups", "photos/archive"];
+    for what in ["photos", "music", "cloud", "movies", "backups"] {
+        let Some(drive) = cfg["locations"][what].as_str() else {
+            continue;
+        };
+        if !common::extra_drive(cfg, drive) {
+            continue;
+        }
+        let folders: Vec<&str> = if what == "backups" {
+            backups.to_vec()
+        } else {
+            (0..4)
+                .map(|n| common::shared_folder(what, n))
+                .filter(|f| !f.is_empty())
+                .collect()
+        };
+        for folder in folders {
+            own.push(format!("{}/{drive}/{folder}", common::EXTRA_MOUNTS));
+        }
+    }
+    own
 }
 fn is_own(path: &str, own: &[String]) -> bool {
     own.iter()
         .any(|o| path == o || path.starts_with(&format!("{o}/")))
+}
+/// The folders the Drives page's jobs make at a drive's top (contract §5): an old copy, a
+/// copy under way, one being deleted. Never offered, nor anything inside them.
+const JOB_FOLDERS: [&str; 3] = ["nekoserver-old-", "nekoserver-new-", "nekoserver-deleting-"];
+fn is_job_folder(name: &str) -> bool {
+    JOB_FOLDERS.iter().any(|start| name.starts_with(start))
 }
 
 /// The mounts of the kernel's table: (where, filesystem type), the last one for a folder
@@ -408,6 +466,12 @@ pub fn inside(path: &str, table: &str, cfg: &Value) -> Value {
             "That is one of NekoServer's own folders, which are used already. Choose a folder of yours.",
         );
     }
+    if path.split('/').any(is_job_folder) {
+        return refuse(
+            "E42",
+            "That folder belongs to a move on the Drives page (a copy it keeps or deletes). Choose a folder of yours.",
+        );
+    }
     let points: Vec<String> = mounts(table).into_iter().map(|(p, _)| p).collect();
     let limit = facts()["browse_limit"].as_u64().unwrap_or(200) as usize;
     let wanted = PathBuf::from(path);
@@ -457,7 +521,11 @@ fn names_in(path: &Path, limit: usize) -> std::result::Result<(Vec<String>, bool
         let Some(name) = entry.file_name().to_str().map(str::to_string) else {
             continue; // not UTF-8: no device writes such a name, and the page could not show it
         };
-        if name.starts_with('.') || name.chars().any(char::is_control) || name.contains('\\') {
+        if name.starts_with('.')
+            || name.chars().any(char::is_control)
+            || name.contains('\\')
+            || is_job_folder(&name)
+        {
             continue;
         }
         names.push(name);
@@ -629,6 +697,35 @@ mod tests {
     }
 
     #[test]
+    fn a_folder_made_on_an_extra_drive_names_the_drive_only() {
+        // 1.0.1, part C: no path goes on (media_locations.py makes <drive>/media/<kind>).
+        let make = json!({"change": "make", "kind": "music", "drive": "d4", "downloads": false,
+            "backup": true, "path": "/etc", "how": "copy"});
+        assert_eq!(
+            checked(&make).unwrap(),
+            json!({"change": "make", "kind": "music", "drive": "d4", "downloads": false, "backup": true})
+        );
+        let mut films = make.clone();
+        films["kind"] = json!("movies");
+        assert!(checked(&films).unwrap().get("backup").is_none());
+        for (key, bad) in [
+            ("drive", json!("../d4")),
+            ("drive", json!("D4")),
+            ("drive", json!("4d")),
+            ("drive", json!("")),
+            ("drive", json!("d12345678901234567")),
+            ("drive", json!(null)),
+            ("downloads", json!("yes")),
+            ("downloads", json!(null)),
+            ("backup", json!("no")),
+        ] {
+            let mut wrong = make.clone();
+            wrong[key] = bad.clone();
+            assert!(checked(&wrong).is_err(), "{key} = {bad}");
+        }
+    }
+
+    #[test]
     fn a_change_is_written_for_root_and_its_service_started_once() {
         let (f, systemd, folder) = folders("start");
         let asked = json!({"op": "app_media_change", "change": "remove", "kind": "tv", "slot": "tv", "token": "x"});
@@ -774,12 +871,55 @@ mod tests {
     }
 
     #[test]
+    fn the_folders_a_move_put_on_an_extra_drive_are_never_offered() {
+        // T3-101-2: photos moved to d4 (and the backups): their folders there are
+        // NekoServer's own, as Media folders refuses them.
+        let cfg = json!({"data_mount": "/srv/nekoserver", "media_mount": "/mnt/nekoserver-media",
+            "storage": {"d4": {"uuid": "x"}, "d5": {"uuid": "y"}},
+            "locations": {"photos": "d4", "backups": "d4", "music": "media", "movies": "d9"}});
+        let own = own_folders(&cfg);
+        for folder in [
+            "/mnt/nekoserver-drives/d4/photos/immich-library",
+            "/mnt/nekoserver-drives/d4/backups",
+            "/mnt/nekoserver-drives/d4/photos/archive",
+        ] {
+            assert!(own.iter().any(|o| o == folder), "{folder}: {own:?}");
+        }
+        assert!(
+            !own.iter()
+                .any(|o| o.contains("/d9/") || o.contains("library/music")),
+            "{own:?}"
+        );
+        let refused = inside(
+            "/mnt/nekoserver-drives/d4/photos/immich-library/x",
+            "",
+            &cfg,
+        );
+        assert_eq!(refused["error"], "E42", "{refused}");
+        assert!(is_own("/mnt/nekoserver-drives/d4/backups/photos", &own));
+        assert!(!is_own("/mnt/nekoserver-drives/d4/films", &own));
+    }
+
+    #[test]
     fn the_folders_inside_are_names_only_without_links_hidden_or_own_folders() {
         let top = std::env::temp_dir().join(format!("neko-media-browse-{}", std::process::id()));
         let _ = fs::remove_dir_all(&top);
         // Looked at as if under /mnt: the page may look only there, so the test's own
         // folder stands in through the check that matters here (names_in).
-        for name in ["Films", "Shows", ".hidden", "lost+found"] {
+        // The Drives page's own folders (an old copy, a copy under way, one being deleted)
+        // are never offered: picking one would put an app's folder on a copy the page deletes.
+        for name in [
+            "Films",
+            "Shows",
+            ".hidden",
+            "lost+found",
+            "nekoserver-old-photos-0123456789abcdef",
+            "nekoserver-new-movies-0123456789abcdef",
+            "nekoserver-deleting-music-0123456789abcdef",
+            // A name the page could not show or send back as it is: each is left out.
+            "back\\slash",
+            "new\nline",
+        ] {
             fs::create_dir_all(top.join(name)).unwrap();
         }
         fs::write(top.join("notes.txt"), "x").unwrap();
@@ -810,6 +950,14 @@ mod tests {
             inside("/srv/nekoserver/appdata", TABLE, &cfg)["error"],
             "E42"
         );
+        for path in [
+            "/mnt/nekoserver-drives/d3/nekoserver-old-photos-0123456789abcdef",
+            "/mnt/nekoserver-drives/d3/nekoserver-new-movies-0123456789abcdef/Films",
+        ] {
+            let refused = inside(path, TABLE, &cfg);
+            assert_eq!(refused["error"], "E42", "{path}");
+            assert!(refused["message"].as_str().unwrap().contains("Drives page"));
+        }
         let missing = inside("/mnt/not-there-at-all", TABLE, &cfg);
         assert_eq!(missing["error"], "E42");
         assert!(missing["message"].as_str().unwrap().contains("not there"));

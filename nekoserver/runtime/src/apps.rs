@@ -196,6 +196,10 @@ fn shared_lock(config: &Path) -> Result<PathBuf> {
     Ok(data.join("installer/recovery.lock"))
 }
 
+/// Said when a restart is refused for a drive: any drive of the settings, an Extra drive
+/// too (it named only the app drive and the media drive).
+const DRIVE_NOT_THERE: &str = "A drive in your settings isn't connected, or another drive is in its place, so nothing was restarted. Server health shows which one.";
+
 pub struct Restart<'a> {
     pub config: &'a Path,
     pub app: &'a str,
@@ -215,7 +219,7 @@ impl Restart<'_> {
         }
         let lock = match shared_lock(self.config) {
             Ok(path) => path,
-            Err(_) => return refused("E47", "The app drive or media drive isn't the one in your settings, so nothing was restarted. Server health shows which drive is missing."),
+            Err(_) => return refused("E47", DRIVE_NOT_THERE),
         };
         // Recorded first, so two requests at once can't both take the lock.
         if !self.actions.begin(
@@ -1090,5 +1094,12 @@ mod tests {
         assert!(child.try_wait().unwrap().is_none());
         let _ = child.kill();
         let _ = child.wait();
+    }
+    #[test]
+    fn a_restart_refused_for_a_drive_names_any_drive() {
+        let source = include_str!("apps.rs");
+        let start = &source[source.find("pub fn start(self) -> Value {").unwrap()..];
+        assert!(start.contains("Err(_) => return refused(\"E47\", DRIVE_NOT_THERE),"));
+        assert!(!DRIVE_NOT_THERE.contains("media drive"));
     }
 }

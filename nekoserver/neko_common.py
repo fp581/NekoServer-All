@@ -22,7 +22,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-VERSION = '1.0.0'
+VERSION = '1.0.1'
 
 # "Europe/London", and the one-word zones zoneinfo also ships ("Japan", "CET", "UTC").
 TIMEZONE_PATTERN = re.compile(r'[A-Za-z_][A-Za-z0-9_+-]*(?:/[A-Za-z0-9_+-]+)*')
@@ -331,6 +331,12 @@ SETUP_LOCK = Path(SHARED['setup_lock'])
 # also while they finish one that was cut off: the two never run at the same time,
 # whether started from the dashboard or a terminal. In /run: a restart lets it go.
 OPERATION_LOCK = Path(SHARED['operation_lock'])
+
+
+# Set by a Drives job for the setup it runs again (T1-22): recovery_tools.lock waits this
+# many seconds for the backups' lock instead of refusing at once (a nightly job may take it
+# for a moment before it gives way to the job).
+LOCK_WAIT = 'NEKOSERVER_LOCK_WAIT'
 
 
 def hold_operation(lock=None, wait=False):
@@ -1269,6 +1275,198 @@ def extra_drives(config):
     }
 
 
+# Where the Drives page last put things (T1-17): the Extra drives and "locations", on the
+# OS disk. A Drives job writes it at each commit point, beside the settings files it knows;
+# a my-config.json elsewhere (where a release was unpacked) does not get the change, and
+# setup, the uninstaller, recovery and migrate.py, started with that file after the SSD was
+# lost, took it as it was. Only a server whose owner used the Drives page has one. The SSD
+# and the media drive are not in it: a new SSD is the settings file's own.
+PLACES_RECORD = Path('/etc/nekoserver-os/places.json')
+PLACE_NAMES = {'ssd': 'the apps drive', 'media': 'the media and backups drive'}
+NEXTCLOUD_FILES = 'Nextcloud files'
+KIND_NAMES = {
+    'backups': 'backups',
+    'photos': 'photos',
+    'movies': 'films and shows',
+    'music': 'music',
+    'cloud': NEXTCLOUD_FILES,
+}
+
+
+def places_of(config):
+    """The part of the settings the record holds."""
+    locations = config.get('locations')
+    return {
+        'storage': json.loads(json.dumps(extra_drives(config))),
+        'locations': json.loads(json.dumps(locations)) if isinstance(locations, dict) else {},
+    }
+
+
+def write_places(config, record=None, keep_drives=False, given_up=()):
+    """The record written (atomic, fsynced) from these settings. `keep_drives`: an Extra
+    drive the record has and these settings lack is kept (setup saving a settings file
+    that never had it; T1-20), except one this run gave up (`given_up`: setup's "Is this
+    drive permanently unavailable?" answered yes)."""
+    places = places_of(config)
+    if keep_drives:
+        saved = read_places(record) or {'storage': {}}
+        kept = {name: drive for name, drive in saved['storage'].items() if name not in given_up}
+        places['storage'] = {**kept, **places['storage']}
+    atomic_json(record or PLACES_RECORD, places)
+
+
+def read_places(record=None):
+    """The record, or None when there is none (or it can not be read: then the settings file
+    is used as before)."""
+    try:
+        value = json.loads(Path(record or PLACES_RECORD).read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return None
+    if (
+        not isinstance(value, dict)
+        or not isinstance(value.get('storage'), dict)
+        or not isinstance(value.get('locations'), dict)
+    ):
+        return None
+    return value
+
+
+def current_places(config, record=None):
+    """(settings, line): the settings with the record's Extra drives and places when they
+    differ from these, and the line that says so; (the same settings, None) otherwise."""
+    record = Path(record or PLACES_RECORD)
+    saved = read_places(record)
+    if saved is None or places_of(config) == {'storage': saved['storage'], 'locations': saved['locations']}:
+        return config, None
+    new = json.loads(json.dumps(config))
+    storage = new['storage'] if isinstance(new.get('storage'), dict) else {}
+    for name in extra_drives(new):
+        del storage[name]
+    storage.update(json.loads(json.dumps(saved['storage'])))
+    new['storage'] = storage
+    if saved['locations']:
+        new['locations'] = json.loads(json.dumps(saved['locations']))
+    else:
+        new.pop('locations', None)
+    said = [
+        f'{KIND_NAMES.get(kind, kind)} on {PLACE_NAMES.get(place) or "Extra drive " + str(place)}'
+        for kind, place in sorted(saved['locations'].items())
+    ]
+    line = (
+        "This server's data was moved from the dashboard; using its current places"
+        + (': ' + ', '.join(said) if said else ': everything on the apps and media drives')
+        + drives_said(config, saved)
+        + f' (from {record}).'
+    )
+    return new, line
+
+
+def drives_said(config, saved):
+    """The Extra drives the record names, said when the settings file has others (T1-20:
+    setup takes a drive the file lacks from the record, and says so)."""
+    names = sorted(saved['storage'])
+    if set(names) == set(extra_drives(config)):
+        return ''
+    if not names:
+        return '; no Extra drives'
+    if len(names) == 1:
+        return f'; Extra drive {names[0]}'
+    return '; Extra drives ' + ', '.join(names[:-1]) + ' and ' + names[-1]
+
+
+def take_places(config, paths=(), out=print, record=None):
+    """The record's places put into `config` (changed in place) and into each settings file
+    in `paths` that is there (best effort: one that can not be written is said), with one
+    line. True when the record was used."""
+    new, line = current_places(config, record)
+    if line is None:
+        return False
+    config.clear()
+    config.update(new)
+    written, failed = [], []
+    for path in dict.fromkeys(Path(p) for p in paths if p):
+        try:
+            now = json.loads(path.read_text(encoding='utf-8'))
+            if not isinstance(now, dict):
+                continue
+            fixed, _ = current_places(now, record)
+            if fixed is not now:
+                owner = path.stat()
+                atomic_json(path, fixed)
+                if os.geteuid() == 0:
+                    os.chown(path, owner.st_uid, owner.st_gid, follow_symlinks=False)
+                written.append(str(path))
+        except (OSError, ValueError, RuntimeError) as error:
+            failed.append(f'{path} could not be ({error}): the places above are used anyway')
+    # One line: what is used, and only what was really written (a --dry-run writes none).
+    done = [f'{", ".join(written)} brought up to date'] if written else []
+    out(line + ''.join(f' {part[0].upper()}{part[1:]}.' for part in done + failed))
+    return True
+
+
+# Whether a drive is there (T1-18): an Extra drive gone, with an empty mount folder (or
+# another disk) in its place, was read and written as if it were the drive. A job checks
+# each drive it uses before it starts and before each write.
+STORAGE_KEYS = {'ssd': 'data_ssd', 'media': 'media_hdd'}
+
+
+def mounted_uuid(folder):
+    """The filesystem UUID of what is mounted at `folder`; '' for a mount that has none (a
+    network share) or when it can not be read; None when nothing is mounted there. findmnt
+    alone: a bind of a folder on the same filesystem (a role kept on the disk Linux runs
+    from, or on the drive both roles share) is no mount to os.path.ismount (review of
+    cdcbc14), and findmnt shows it with its filesystem's UUID."""
+    try:
+        found = subprocess.run(
+            ['findmnt', '-n', '-o', 'UUID', '--mountpoint', str(folder)],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ''
+    if found.returncode != 0:
+        return None  # findmnt finds nothing mounted there
+    words = found.stdout.split()
+    return words[-1] if words else ''  # the top mount, the one paths reach
+
+
+def drive_away(config, place):
+    """None when the drive `place` ("ssd", "media" or an Extra drive's name) is there: the
+    filesystem the settings name, mounted at its folder. "missing" when nothing is mounted
+    there (or it is no drive of the settings), "other" when another disk is. A layout that
+    names no filesystem for it (one drive; a folder on a network share) needs its folder."""
+    try:
+        root = drive_folder(config, place)
+    except (RuntimeError, KeyError, TypeError):
+        return 'missing'
+    storage = config.get('storage') if isinstance(config.get('storage'), dict) else {}
+    record = storage.get(STORAGE_KEYS.get(place, place))
+    uuid = record.get('uuid') if isinstance(record, dict) else None
+    if not uuid:
+        return None if Path(root).is_dir() else 'missing'
+    now = mounted_uuid(root)
+    if now is None:
+        return 'missing'
+    return 'other' if now and now != uuid else None
+
+
+def place_holding(config, path):
+    """The drive ("ssd", "media" or an Extra drive's name) whose folder holds `path`, the
+    deepest one (an Extra drive's folder may be under another's); None for none."""
+    real = Path(os.path.realpath(path))
+    found = None
+    for place in ('ssd', 'media', *sorted(extra_drives(config))):
+        try:
+            root = Path(os.path.realpath(drive_folder(config, place)))
+        except (RuntimeError, KeyError, TypeError):
+            continue
+        if (root == real or root in real.parents) and (found is None or len(root.parts) > len(found[1].parts)):
+            found = (place, root)
+    return found[0] if found else None
+
+
 def not_a_drive(config, drive):
     """Why `drive` is no drive of these settings, in words."""
     storage = config.get('storage')
@@ -1346,6 +1544,22 @@ def drives_in_use(config):
     placed = [config.get('locations'), config.get(INSTALL_SECTION)]
     named = {drive for section in placed if isinstance(section, dict) for drive in section.values()}
     return sorted(drive for drive in named if isinstance(drive, str) and drive in extra_drives(config))
+
+
+def drives_watched(config):
+    """The extra drives the drive checks watch, as the runtime's common::drives_watched:
+    those in use, then those holding only a folder the Media folders page made (part C;
+    T2's 8d62a8c for the runtime guard, setup's check here)."""
+    found = drives_in_use(config)
+    placement = config.get('placement')
+    rows = placement.values() if isinstance(placement, dict) else ()
+    for row in rows:
+        extra = row.get('extra') if isinstance(row, dict) else None
+        for entry in extra if isinstance(extra, list) else ():
+            name = entry.get('made') if isinstance(entry, dict) else None
+            if isinstance(name, str) and name in extra_drives(config) and name not in found:
+                found.append(name)
+    return found
 
 
 def photo_library(config):
@@ -2109,9 +2323,9 @@ def drive_holds(config, key):
             ['your apps'] + ['photos'] * media_group(config, 'photos') + ['music'] * media_group(config, 'music')
         )
     if key == 'media_hdd':
-        kept = ['movies', 'shows'] * media_group(config, 'movies') + ['Nextcloud files'] * cloud
+        kept = ['movies', 'shows'] * media_group(config, 'movies') + [NEXTCLOUD_FILES] * cloud
         return 'your ' + listed([*kept, 'the backups']) if kept else 'the backups'
-    copied = ['photos'] * immich_wanted(config) + ['Nextcloud files'] * cloud
+    copied = ['photos'] * immich_wanted(config) + [NEXTCLOUD_FILES] * cloud
     return 'the weekly copy of your ' + (listed(copied) or 'files')
 
 
@@ -2604,8 +2818,9 @@ def verify_storage(config, keys=('data_ssd', 'media_hdd'), ask=None, writable=Fa
     import native_runtime
 
     if tuple(keys) == OLD_STORAGE_KEYS:
-        # ... and every other drive something is placed on (0.50.0).
-        keys = (*keys, *drives_in_use(config))
+        # ... and every other drive something is placed on (0.50.0), or that holds a folder
+        # the Media folders page made: the drives the runtime's guard watches.
+        keys = (*keys, *drives_watched(config))
     settings = {k: config.get(k) for k in ('data_mount', 'media_mount', 'external_backup_mount', 'storage')}
     photos = config.get('photos') or {}
     settings['photos'] = {

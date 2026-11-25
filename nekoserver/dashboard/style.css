@@ -1986,6 +1986,73 @@ body.tv {
   margin: 10px 0;
 }
 
+/* ---------- drives ---------- */
+.drive-section {
+  margin-bottom: 18px;
+}
+.drive-section-title {
+  margin: 18px 0 10px;
+  font-size: 16px;
+}
+/* A drive's long name ("Media and backups drive") in a badge, beside a card's title on a
+ * phone at 320 px: the badge goes under the title, and wraps (the browser test). */
+.drive-kind .card-heading,
+.drive-disk .card-heading {
+  flex-wrap: wrap;
+}
+.drive-kind .card-heading .badge,
+.drive-disk .card-heading .badge {
+  max-width: 100%;
+  white-space: normal;
+}
+.drive-disk p,
+.drive-kind p,
+.drive-mirror h3,
+.drive-mirror p {
+  overflow-wrap: anywhere; /* long models and serials */
+}
+.drive-serial {
+  color: var(--muted);
+  font-size: 13px;
+}
+.drive-mirror h4 {
+  margin: 12px 0 4px;
+  font-size: 14px;
+}
+.drive-mirror .row > div,
+.drive-old {
+  min-width: 0;
+}
+.drive-old {
+  border-top: 1px solid var(--line);
+  margin-top: 10px;
+  padding-top: 10px;
+}
+.drive-last {
+  color: var(--mint);
+  font-weight: 600;
+}
+.drive-facts {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 4px 14px;
+  margin: 8px 0 14px;
+}
+.drive-facts dt {
+  color: var(--muted);
+}
+.drive-facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.drive-confirm {
+  flex-direction: column;
+  align-items: stretch;
+}
+.drive-confirm .field input {
+  width: 100%;
+}
+
 @media (min-width: 1700px) {
   main {
     padding: 36px 52px;

@@ -39,6 +39,7 @@ Installing needs the secure Tailscale address (https) or the server's own addres
 | **Server health** | Drive space and health, RAID arrays and Btrfs pools (each drive of an array, rebuilds with their progress, and the error counters that show a drive going bad early), **what starts by itself after a restart**, the outside heartbeat, phone notifications, app checks and waiting updates. |
 | **Updates** | Three tabs. **Apps**: the version each app runs, the new versions waiting and the night each installs by itself, with **Update now** for the impatient. **NekoServer**: the release this server runs and a newer one to upgrade to. **System**: the Linux updates that are waiting, and whether the PC needs a restart. Changing anything here needs the PIN. |
 | **Media folders** | Your films, shows and music: NekoServer's own library and the folders of yours connected to it, whether each is there now, and where new downloads go. Add a folder, take one away, or send new downloads elsewhere; see **Media folders** below. Needs the PIN on every device. |
+| **Drives** | Every disk in the server and what it is (Apps drive, Media and backups drive, Offline backup drive, Extra drive, mirror drive, system drive, not in use), and where your photos, films and shows, music, Nextcloud files and backups are kept, with their size. **Use this drive** or **Erase and prepare** for a disk not in use, **Stop using this drive** for an empty Extra drive, **Move to…** another drive, the old copy a move leaves (**Move back**, **Delete the old copy**), and **Add the replacement drive** for a mirror that lost one. Erasing a disk and deleting an old copy ask for words typed to confirm and the PIN again. Needs the PIN on every device. |
 | **Backup cards** | Only with backup cards switched on ([BACKUP-CARDS.md](BACKUP-CARDS.md)): the cards of the set (which one is in, which is full, how many files are on the cards and how many wait for one), **Look for cards** to list the SD cards and USB sticks plugged in, **Use this as card N of the set** for an empty one, and **Write to the card now**. Everything on it needs the PIN on every device, the server too. The Backups page shows the set too, with the same button. |
 | **Needs attention** | Everything to look at, most urgent first, each with "What should I do?". |
 | **Help** | Step-by-step guides, the error codes below, installing it as an app, and a privacy-safe summary to share. |
@@ -105,7 +106,7 @@ To leave fans and lights completely alone, set `"fan_control": false` under `"da
 
 ## Your PIN
 
-**On the server itself**, anyone using the dashboard can change fans and lights. **Phones, tablets and other computers** can always look, but need the **PIN** chosen during setup to change anything. **Restarting or closing apps, updates, Ask Neko, the Media folders page and the Backup cards page need the PIN on every device**, the server too. Once unlocked, a device stays unlocked for 12 hours, or until the page is closed.
+**On the server itself**, anyone using the dashboard can change fans and lights. **Phones, tablets and other computers** can always look, but need the **PIN** chosen during setup to change anything. **Restarting or closing apps, updates, Ask Neko, the Media folders page, the Drives page and the Backup cards page need the PIN on every device**, the server too. Once unlocked, a device stays unlocked for 12 hours, or until the page is closed.
 
 Five wrong PINs lock out that device for 5 minutes (each further five, twice as long). Other devices, and the server itself, are not locked out. The PIN box says how many tries are left, and when a device is locked out, how long it must wait and until what time (on that device's clock).
 
@@ -142,7 +143,8 @@ On a computer, right-click an app on **Your apps**, or a program on **Processes*
 
 The films, shows and music you already had are asked about during setup. **Media folders** does the same after setup, at any time: it shows, for films, shows and music, NekoServer's own library and each folder of yours connected to it (**Ready**, or why it is not there now), and which one new downloads go to. Everything on this page needs your PIN, on the server too.
 
-- **Add a folder**: choose what is in it, then type its path as this server sees it (for a NAS: where its shared folder is mounted here) or press **Pick a folder** to choose from the drives and shared folders mounted under /mnt, /media, /run/media and /srv. **Use it where it is** connects it to the apps without copying anything; **Copy its files into the library** copies them, and your folder is kept as it is. Tick **New downloads go there** to save new ones in it. For music, the page asks what setup asks, **Back this up too?**, in the same words; the answer counts for music on a NAS, as in setup, and the music backup copies it from the next night on (each folder of music says whether it is backed up). The server checks the folder first, as the apps' account would use it, and says in plain words why one can't be used (nothing is mounted there, the apps can't read it, it is read-only, it is not connected at every start).
+- **Add a folder**: choose what is in it, then type its path as this server sees it (for a NAS: where its shared folder is mounted here) or press **Pick a folder** to choose from the drives and shared folders mounted under /mnt, /media, /run/media and /srv. **Use it where it is** connects it to the apps without copying anything; **Copy its files into the library** copies them, and your folder is kept as it is. Tick **New downloads go there** to save new ones in it. For music, the page asks what setup asks, **Back this up too?**, in the same words; the answer counts for music on a NAS, as in setup, and the music backup copies it from the next night on (each folder of music says whether it is backed up). The server checks the folder first, as the apps' account would use it, and says in plain words why one can't be used (nothing is mounted there, the apps can't read it, it is read-only, it is not connected at every start). (`/mnt/nekoserver-drives`, where the Extra drives are mounted, is NekoServer's own folder: setup keeps it open to pass through, 0755, as /mnt.)
+- **A new folder on an Extra drive** (1.0.1): offered for each kind while an Extra drive is connected, and opened by **Use for films, shows or music** on that drive's card on the Drives page. NekoServer makes `/mnt/nekoserver-drives/<drive>/media/<kind>` (`movies`, `tv` or `music`) for the apps (the apps' account owns it, mode 2775, as the library's folders; the `media` folder above it is root's, 0755; nothing else on the drive is changed) and connects it as a folder used where it is, with **New downloads go there** if ticked. It is saved as NekoServer's folder on that drive, so **Stop using this drive** waits until it is taken away. For music, **Back this up too?** is asked as for a NAS (yes unless you say no), and the backups page names the folder in the music backup's row. One taken away keeps its files; made again, it is used as it is.
 - **Send new downloads here**: new films, shows or music go to NekoServer's library, or to a connected folder the apps may write to (checked first). The folder they went to before stays connected, read-only, so what was downloaded into it stays in your library; that is so for a folder that took only the new downloads too (0.51 disconnected that one).
 - **Take away**: the folder is disconnected from the apps. **The files in it are never deleted, moved or changed**; they are just no longer shown.
 
@@ -166,7 +168,7 @@ When something goes wrong, the dashboard shows a short code at the top of the pa
 | E40 | Page not found | Use the menu to go back. |
 | E41 | Open the dashboard from its own address | Use 127.0.0.1:8787 on the server, or the Tailscale address. |
 | E42 | Request not supported | Reload the page. (For a fan or light change, the message says what was wrong.) |
-| E43 | Enter your PIN to change this | Phones, tablets and other computers need the PIN chosen during setup for fans and lights; restarting or closing apps, updates, Ask Neko, the Media folders page and the Backup cards page need it on every device. Press *Unlock changes* (the page asks by itself for those). |
+| E43 | Enter your PIN to change this | Phones, tablets and other computers need the PIN chosen during setup for fans and lights; restarting or closing apps, updates, Ask Neko, the Media folders page, the Drives page and the Backup cards page need it on every device. Press *Unlock changes* (the page asks by itself for those). |
 | E44 | Wrong PIN | Check the PIN and try again. The message says how many tries this device has left; after the last one, how long it must wait. Forgot it? "Your PIN" above says how to find it or choose a new one. |
 | E45 | Too many tries; wait a while | The message says how long, and until what time. Five wrong PINs lock out that device for 5 minutes; each further five, twice as long. Other devices and the server itself are not locked out. When the message says *other devices together* typed too many wrong PINs, phones and tablets get one more try every two hours; on the server itself you can still unlock. |
 | E46 | The change could not be saved | Nothing was changed, because it wouldn't survive a restart. The server's system drive may be full or failing. |
@@ -216,7 +218,7 @@ There is nothing to configure. The dashboard reads what Linux reports:
 To see everything the dashboard can read on this computer:
 
 ```bash
-/usr/local/lib/nekoserver-dashboard/v1.0.0/nekoserver-runtime hardware
+/usr/local/lib/nekoserver-dashboard/v1.0.1/nekoserver-runtime hardware
 ```
 
 ### Fan control in detail
@@ -261,7 +263,7 @@ The dashboard is part of the normal setup (the full profile installs it). To ins
 sudo bash install.sh --profile dashboard --apply
 ```
 
-Setup refreshes its service definitions and its menu entry. Its files are kept per release under `/usr/local/lib/nekoserver-dashboard/v1.0.0` (one folder per release, and when a setup run has finished, the folders of earlier releases that no service uses any more are removed; a changed file there stops setup rather than being overwritten). A menu entry or launcher you wrote yourself at the same place is kept.
+Setup refreshes its service definitions and its menu entry. Its files are kept per release under `/usr/local/lib/nekoserver-dashboard/v1.0.1` (one folder per release, and when a setup run has finished, the folders of earlier releases that no service uses any more are removed; a changed file there stops setup rather than being overwritten). A menu entry or launcher you wrote yourself at the same place is kept.
 
 ### What runs, and what it can see
 

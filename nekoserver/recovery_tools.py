@@ -191,9 +191,11 @@ def lock(config, changes_apps=True, patient=None, limit=1800):
     if not path.parent.is_dir() and not os.path.ismount(mount):
         raise RuntimeError(f'The data SSD is not mounted at {mount}; connect it (or restart) and try again')
     path.parent.mkdir(parents=True, exist_ok=True)
+    if patient is None:
+        patient, limit = how_patient(limit)
     with path.open('a') as stream:
         os.fchmod(stream.fileno(), 0o600)
-        wait_for(stream, sys.stdin.isatty() if patient is None else patient, limit)
+        wait_for(stream, patient, limit)
         if changes_apps:
             blocked = neko_common.pending_maintenance(
                 neko_common.MAINTENANCE_JOURNAL, 'Setup stopped before changing anything else.'
@@ -211,6 +213,18 @@ def guarded(context, step):
     mounts(context.config)
     with lock(context.config):
         return step(context)
+
+
+def how_patient(limit):
+    """(patient, limit) for a run that did not say: a run at a terminal waits; so does the
+    setup a Drives job runs again, for the seconds it gives (neko_common.LOCK_WAIT, T1-22)."""
+    try:
+        given = int(os.environ.get(neko_common.LOCK_WAIT, ''))
+    except ValueError:
+        given = 0
+    if given > 0:
+        return True, given
+    return sys.stdin.isatty(), limit
 
 
 # Said by every program that takes the lock (setup, account-setup.py, the recovery menu,

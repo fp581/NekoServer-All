@@ -506,6 +506,42 @@ pub fn same_folder(a: &Path, b: &Path) -> bool {
         _ => false,
     }
 }
+/// The kinds ("movies", "music": rows of the placement table) that have a folder the Media
+/// folders page made on drive `name` (part C: <name>/media/<kind>, saved with "made").
+pub fn made_on(cfg: &serde_json::Value, name: &str) -> Vec<String> {
+    cfg["placement"]
+        .as_object()
+        .into_iter()
+        .flatten()
+        .filter(|(_, row)| {
+            row["extra"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .any(|entry| entry["made"] == name)
+        })
+        .map(|(kind, _)| kind.clone())
+        .collect()
+}
+/// The extra drives a drive's return and the dashboard watch: those in use (below), then
+/// those holding only a folder the Media folders page made (T1-19: one pulled and plugged
+/// in again was never mounted again, nor its apps restarted, nor shown as away).
+pub fn drives_watched(cfg: &serde_json::Value) -> Vec<String> {
+    let mut found = drives_in_use(cfg);
+    let made = cfg["placement"]
+        .as_object()
+        .into_iter()
+        .flatten()
+        .flat_map(|(_, row)| row["extra"].as_array().into_iter().flatten())
+        .filter_map(|entry| entry["made"].as_str())
+        .filter(|name| extra_drive(cfg, name));
+    for name in made {
+        if !found.iter().any(|f| f == name) {
+            found.push(name.to_string());
+        }
+    }
+    found
+}
 /// The extra drives something is placed on: an app's files ("locations"), or its
 /// settings and database ("installed", 0.50.0). The ones every job checks.
 pub fn drives_in_use(cfg: &serde_json::Value) -> Vec<String> {
@@ -1177,8 +1213,13 @@ pub static OPERATION_LOCK: std::sync::LazyLock<&str> = std::sync::LazyLock::new(
 /// How a job begins its message when it gave way to setup. Not a failure: the job ends
 /// without an error (main.rs), so no alert is sent, and it runs at its next time.
 pub const POSTPONED: &str = "Postponed: setup is running";
+/// The same for a nightly job that gave way to a change on the Drives page, an upgrade or
+/// a drive move (T1-22): no failure, it runs at its next time.
+pub const POSTPONED_FOR_WORK: &str =
+    "Postponed: a change on the Drives page, an upgrade or a drive move is at work";
 pub fn postponed(e: &Error) -> bool {
-    e.to_string().starts_with(POSTPONED)
+    let said = e.to_string();
+    said.starts_with(POSTPONED) || said.starts_with(POSTPONED_FOR_WORK)
 }
 /// `lock_wait` for the backups' shared lock (installer/recovery.lock), which setup holds
 /// too while it changes apps, also while it waits at a question for you. When setup is
@@ -1187,43 +1228,128 @@ pub fn postponed(e: &Error) -> bool {
 pub fn shared_lock_wait(path: &Path, max: Duration, while_setup: Duration) -> Result<File> {
     shared_lock_wait_with(path, Path::new(*SETUP_LOCK), max, while_setup)
 }
+/// `shared_lock_wait` for the nightly jobs (the backups, the photo copy, the USB copy and
+/// the monthly update): they also give way to a change on the Drives page, an upgrade or
+/// a drive move, which hold the operation lock (T1-22: the app backup started during an
+/// erase from the Drives page, and the erase's setup refused three steps). They wait as
+/// they do for setup, then are postponed (rc 0, never "failed") to their next time. A job
+/// started by the one holding it (none is today) is not held up by it.
+pub fn nightly_lock_wait(path: &Path, max: Duration, while_setup: Duration) -> Result<File> {
+    lock_wait_giving_way(
+        path,
+        Path::new(*SETUP_LOCK),
+        &|| operation_elsewhere(Path::new(*OPERATION_LOCK)),
+        max,
+        while_setup,
+    )
+}
 fn shared_lock_wait_with(
     path: &Path,
     setup_lock: &Path,
     max: Duration,
     while_setup: Duration,
 ) -> Result<File> {
+    lock_wait_giving_way(path, setup_lock, &|| false, max, while_setup)
+}
+/// Who keeps a job from the backups' lock.
+#[derive(PartialEq)]
+enum Holder {
+    Setup,
+    Work,
+    Other,
+}
+/// `work_elsewhere`: whether a Drives job, an upgrade or a drive move is at work (always
+/// false for the waits that do not give way to them).
+fn lock_wait_giving_way(
+    path: &Path,
+    setup_lock: &Path,
+    work_elsewhere: &dyn Fn() -> bool,
+    max: Duration,
+    while_setup: Duration,
+) -> Result<File> {
     let start = Instant::now();
     let mut announced = false;
     loop {
-        match lock(path) {
+        let holder = match lock(path) {
+            // Taken, and let go again at once while a Drives job (or an upgrade, a drive
+            // move) is at work: this job waits for it as for setup.
+            Ok(f) if work_elsewhere() => {
+                drop(f);
+                Holder::Work
+            }
             Ok(f) => return Ok(f),
             Err(e) if !busy(&e) => return Err(e),
-            Err(_) => {
-                let setup = held_by(path, setup_lock);
-                let limit = if setup { while_setup.min(max) } else { max };
-                if start.elapsed() >= limit {
-                    return Err(if setup {
-                        Error::new(&format!(
-                            "{POSTPONED} (sudo bash install.sh holds the backups' lock, perhaps waiting at a question); this run did not fail and runs again at its next time"
-                        ))
-                    } else {
-                        still_held(path, max)
-                    });
-                }
-                if !announced {
-                    let who = if setup {
-                        "setup (sudo bash install.sh)".to_string()
-                    } else {
-                        holder(path)
-                    };
-                    println!("{}", waiting_line(&who, limit));
-                    announced = true;
-                }
-                thread::sleep(Duration::from_secs(5).min(limit));
-            }
+            Err(_) if held_by(path, setup_lock) => Holder::Setup,
+            Err(_) => Holder::Other,
+        };
+        let limit = if holder == Holder::Other {
+            max
+        } else {
+            while_setup.min(max)
+        };
+        if start.elapsed() >= limit {
+            return Err(match holder {
+                Holder::Setup => Error::new(&format!(
+                    "{POSTPONED} (sudo bash install.sh holds the backups' lock, perhaps waiting at a question); this run did not fail and runs again at its next time"
+                )),
+                Holder::Work => Error::new(&format!(
+                    "{POSTPONED_FOR_WORK} (the Drives page or the Updates page shows it); this run did not fail and runs again at its next time"
+                )),
+                Holder::Other => still_held(path, max),
+            });
         }
+        if !announced {
+            let who = match holder {
+                Holder::Setup => "setup (sudo bash install.sh)".to_string(),
+                Holder::Work => {
+                    "a change on the Drives page, an upgrade or a drive move".to_string()
+                }
+                Holder::Other => self::holder(path),
+            };
+            println!("{}", waiting_line(&who, limit));
+            announced = true;
+        }
+        thread::sleep(Duration::from_secs(5).min(limit));
     }
+}
+/// Whether a process other than this one and those that started it holds the operation
+/// lock at `op` (read-only, as held_by: the kernel's list of locks, confirmed through the
+/// holder's own open file and its lock on it).
+fn operation_elsewhere(op: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    let Ok(meta) = fs::metadata(op) else {
+        return false;
+    };
+    let locks = fs::read_to_string("/proc/locks").unwrap_or_default();
+    held_elsewhere(&locks, meta.ino(), &lineage(std::process::id()), &|pid| {
+        holds_lock_on(pid, meta.dev(), meta.ino())
+    })
+}
+/// Whether the kernel's list of locks (`locks`) names a holder of the file `ino` that is
+/// not in `mine` and that `holds` confirms (its own open file and its lock on it).
+fn held_elsewhere(locks: &str, ino: u64, mine: &[u32], holds: &dyn Fn(u32) -> bool) -> bool {
+    lock_holders(locks, ino)
+        .into_iter()
+        .any(|pid| !mine.contains(&pid) && holds(pid))
+}
+/// This process and the ones that started it, up to PID 1.
+fn lineage(mut pid: u32) -> Vec<u32> {
+    let mut seen = vec![pid];
+    while pid > 1 && seen.len() < 64 {
+        let Some(parent) = parent_of(pid) else { break };
+        seen.push(parent);
+        pid = parent;
+    }
+    seen
+}
+fn parent_of(pid: u32) -> Option<u32> {
+    let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    // The command's name, in brackets, may hold spaces: the fields after the last ")".
+    stat[stat.rfind(')')? + 1..]
+        .split_whitespace()
+        .nth(1)?
+        .parse()
+        .ok()
 }
 /// Whether setup holds the lock at `path`: a process holding it (the kernel's list of
 /// locks) also has setup's own lock (`setup`) open. Read-only: nothing is locked to find
@@ -1784,6 +1910,16 @@ mod media_answer_tests {
         );
         assert!(drive_folder(&cfg, "d4").is_none());
         assert_eq!(drives_in_use(&cfg), ["d3"]);
+        // Coordinator (1) after T1-19: a drive holding only a folder the Media folders page
+        // made (part C) is watched too, after the drives in use; the jobs' list is as it was.
+        let mut made = cfg.clone();
+        made["storage"]["d4"] = json!({"uuid": "d"});
+        made["placement"] = json!({"movies": {"extra": [{"path": "/mnt/nekoserver-drives/d4/media/movies", "made": "d4"},
+            {"path": "/srv/mine", "made": ""}]}, "music": {"extra": [{"path": "/x", "made": "d9"}]}});
+        assert_eq!(drives_in_use(&made), ["d3"]);
+        assert_eq!(super::drives_watched(&made), ["d3", "d4"]);
+        assert_eq!(super::made_on(&made, "d4"), ["movies"]);
+        assert!(super::made_on(&made, "d3").is_empty());
         assert_eq!(
             files_root(&cfg, "photos").unwrap(),
             Path::new("/mnt/nekoserver-drives/d3")
@@ -2666,7 +2802,14 @@ sys.stdin.read()",
         // ... and confirmed through this process's own open file and the kernel's list
         // of locks on it, not through the device number.
         assert!(holds_lock_on(me, meta.dev(), meta.ino()));
-        assert!(!holds_lock_on(me, meta.dev(), meta.ino() + 1));
+        // A file of this test's own that nothing locks (never "inode + 1": another test of
+        // this process may hold a lock on the file that got that inode).
+        let unlocked = root.join("unlocked");
+        fs::write(&unlocked, b"").unwrap();
+        let open = File::open(&unlocked).unwrap();
+        let free = fs::metadata(&unlocked).unwrap();
+        assert!(!holds_lock_on(me, free.dev(), free.ino()));
+        drop(open);
         let short = Duration::from_millis(50);
         // Another job (no setup lock open) still holds it after the wait: a failure, as before.
         fs::write(&setup, b"").unwrap();
@@ -2682,7 +2825,65 @@ sys.stdin.read()",
         assert!(postponed(&waited), "{waited}");
         drop(setup_open);
         drop(held);
-        assert!(shared_lock_wait_with(&shared, &setup, short, short).is_ok());
+        // Let go: taken, waiting out a test beside this one whose child, forked a moment
+        // ago, still has the descriptor until it runs its program.
+        assert!(shared_lock_wait_with(&shared, &setup, Duration::from_secs(5), short).is_ok());
+        let _ = fs::remove_dir_all(root);
+    }
+    /// T1-22: the nightly jobs give way to a change on the Drives page (an upgrade, a drive
+    /// move) that holds the operation lock, and are postponed, not failed; one started by
+    /// the holder itself is not held up, and a wait that looks at no operation lock
+    /// (drive-return) takes the lock as before.
+    #[test]
+    fn a_nightly_job_gives_way_to_a_drives_job_and_is_postponed_not_failed() {
+        // No program is started and no operation lock is taken here (the check is given):
+        // a child of this test kept other tests' locks for a moment (release-1.0.1 dd36ce3).
+        let root = scratch("t1-22");
+        let (shared, setup) = (root.join("recovery.lock"), root.join("setup.lock"));
+        fs::write(&setup, b"").unwrap();
+        let short = Duration::from_millis(50);
+        // Another test may fork while it holds a lock of its own: a holder that is not a
+        // Drives job is waited for (up to `patient`), never taken as the answer.
+        let patient = Duration::from_secs(5);
+        drop(lock_wait_giving_way(&shared, &setup, &|| false, patient, short).unwrap());
+        let gave = lock_wait_giving_way(&shared, &setup, &|| true, Duration::from_secs(60), short)
+            .unwrap_err();
+        assert!(postponed(&gave), "{gave}");
+        assert!(gave.to_string().starts_with(POSTPONED_FOR_WORK), "{gave}");
+        assert!(
+            lock_wait_giving_way(&shared, &setup, &|| false, patient, short).is_ok(),
+            "the backups' lock was let go again"
+        );
+        // Who holds the operation lock, from the kernel's list: this process and those that
+        // started it never count, a waiter ("->") never does, and a holder counts only when
+        // confirmed through its own open file.
+        let me = std::process::id();
+        let mine = lineage(me);
+        assert!(mine.contains(&me));
+        let line = |pid: u32| format!("1: FLOCK  ADVISORY  WRITE {pid} 00:1a:77 0 EOF");
+        let other = 999_999;
+        assert!(!mine.contains(&other));
+        assert!(held_elsewhere(&line(other), 77, &mine, &|_| true));
+        assert!(
+            !held_elsewhere(&line(me), 77, &mine, &|_| true),
+            "this process"
+        );
+        if let Some(parent) = mine.get(1) {
+            assert!(
+                !held_elsewhere(&line(*parent), 77, &mine, &|_| true),
+                "its parent"
+            );
+        }
+        assert!(
+            !held_elsewhere(&line(other), 78, &mine, &|_| true),
+            "another file"
+        );
+        assert!(
+            !held_elsewhere(&line(other), 77, &mine, &|_| false),
+            "not confirmed"
+        );
+        let waiting = format!("1: -> FLOCK  ADVISORY  WRITE {other} 00:1a:77 0 EOF");
+        assert!(!held_elsewhere(&waiting, 77, &mine, &|_| true), "a waiter");
         let _ = fs::remove_dir_all(root);
     }
     /// A running setup is told by its own lock being held, nothing else (drive-return

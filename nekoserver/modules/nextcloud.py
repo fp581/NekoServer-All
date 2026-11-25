@@ -404,6 +404,20 @@ def settings_changed(recorded, wanted):
     )
 
 
+def after_drives_move(config, recorded, log):
+    """Nextcloud's files moved from the Drives page (storage_jobs.moved_here): the drive
+    they left, in the settings it was installed with, taken for the one the settings name
+    now, so setup run again for that move brings its definition up to date instead of
+    refusing (T1-9). Any other change is still refused."""
+    import storage_jobs
+
+    moved = storage_jobs.moved_here(config, 'cloud')
+    if not moved or recorded.get('media_mount') != str(moved[0]) or str(files_root(config, 'cloud')) != str(moved[1]):
+        return recorded
+    log(f'Nextcloud: its files are on {moved[1]} now (moved from the Drives page)')
+    return {**recorded, 'media_mount': str(moved[1])}
+
+
 def settings_of(owned):
     """The settings an installed definition was made from: recorded since 0.29.0, read
     back from the definition itself for earlier installs."""
@@ -744,7 +758,7 @@ def brought_up_to_date(ctx, owned, image, files):
     (compose.yaml, managed.json)."""
     config = ctx.config
     manifest, managed = files
-    changed = settings_changed(settings_of(owned), settings(config, image))
+    changed = settings_changed(after_drives_move(config, settings_of(owned), ctx.log), settings(config, image))
     if changed:
         raise RuntimeError(
             f'Nextcloud\'s settings in my-config.json changed since it was installed ({changed}), and a '
