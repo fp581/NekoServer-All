@@ -583,6 +583,62 @@ def kind_folders(kind):
     return tuple(DATA_FOLDERS[BACKUP if kind == 'backups' else kind])
 
 
+def inner_names(kind, rel):
+    """The names in a kind's folder `rel` that are another kind's folders (T1-20: the films'
+    library/downloads holds the music's library/downloads/music, which qBittorrent needs on
+    the music's drive): never copied, compared, retired or moved with it, and never in the
+    way of it."""
+    names = set()
+    for other in KINDS:
+        if other != kind:
+            for folder in kind_folders(other):
+                if folder.startswith(rel + '/'):
+                    names.add(folder[len(rel) + 1 :].split('/')[0])
+    return tuple(sorted(names))
+
+
+def kind_skips(kind):
+    """inner_names for each folder of a kind, in the order of kind_folders."""
+    return [inner_names(kind, rel) for rel in kind_folders(kind)]
+
+
+def own_entries(folder, skip=()):
+    """What a kind's folder holds that is its own (another kind's folder in it left out)."""
+    try:
+        return [entry for entry in Path(folder).iterdir() if entry.name not in skip]
+    except OSError:
+        return []
+
+
+def copy_skip(skip):
+    """The keyword migrate.copy and migrate.differences take for `skip` (none when empty)."""
+    return {'skip': skip} if skip else {}
+
+
+def move_folder(source, target, skip=()):
+    """A kind's folder moved on one drive: one rename, or, when another kind's folder is in
+    it or at the target (`skip`), its own entries one by one, the other kind's left where it
+    is. Done again after a power cut, it goes on with what is left."""
+    import stat
+
+    source, target = Path(source), Path(target)
+    if not skip or (not target.exists() and not any((source / name).exists() for name in skip)):
+        os.rename(source, target)
+        return
+    if not target.exists():
+        held = source.stat()
+        target.mkdir()
+        os.chmod(target, stat.S_IMODE(held.st_mode))
+        if os.geteuid() == 0:
+            os.chown(target, held.st_uid, held.st_gid)
+    for entry in own_entries(source, skip):
+        if (target / entry.name).exists() or (target / entry.name).is_symlink():
+            raise RuntimeError(f'{target / entry.name} is in the way: it is there already.')
+        os.rename(entry, target / entry.name)
+    if not any(source.iterdir()):
+        source.rmdir()
+
+
 def places(config):
     from neko_common import extra_drives
 
@@ -1137,11 +1193,29 @@ def this_boot():
 # ---- A: add a drive, give one up ------------------------------------------------------------
 
 
-def next_drive(config):
-    from neko_common import extra_drives
+def next_drive(config, fstab=None, record=None):
+    """The next Extra drive's name free of every trace of an earlier one: the settings, the
+    places record, a mount folder, an fstab line (T1-20: a d4 dropped from the settings,
+    its mount left, made the new disk's d4 fail "Wrong filesystem already mounted")."""
+    from modules import storage
+    from neko_common import extra_drives, read_places
 
-    taken = set(extra_drives(config))
-    return next(f'd{n}' for n in range(3, 100) if f'd{n}' not in taken)
+    taken = set(extra_drives(config)) | set((read_places(record) or {}).get('storage') or {})
+    try:
+        lines = Path(fstab or storage.FSTAB).read_text().splitlines()
+    except OSError:
+        lines = []
+    in_fstab = {
+        storage.fstab_folder(line.split()[1])
+        for line in lines
+        if len(line.split()) >= 2 and not line.lstrip().startswith('#')
+    }
+    root = extra_mount_root()
+    for n in range(3, 100):
+        name = f'd{n}'
+        if name not in taken and not os.path.lexists(root / name) and str(root / name) not in in_fstab:
+            return name
+    raise Stop('No name is free for another drive. Nothing was changed.')
 
 
 def chosen_disk(job, minimum):
@@ -1162,7 +1236,7 @@ def use(job):
     """Job A "use": a disk not in use becomes the next extra drive, taken over as it is or
     erased first; mounted at /mnt/nekoserver-drives/<name> by setup run again."""
     row = chosen_disk(job, FACTS['min_bytes'])
-    name = next_drive(job.config)
+    name = next_drive(job.config, record=job.record)
     if job.request['how'] == 'take_over':
         fs = taken_over(row)
         if not fs:
@@ -1287,11 +1361,14 @@ def paths(config, kind, place, base=None):
     return [root / rel for rel in kind_folders(kind)]
 
 
-def gone_or_empty(folder):
+def gone_or_empty(folder, skip=()):
     """Make way for a folder moved in: nothing there, or an empty folder (a mount point
-    setup closed, chattr +i) taken away."""
+    setup closed, chattr +i) taken away; one that holds only another kind's folders (`skip`)
+    stays, and the folder moved in joins them."""
     folder = Path(folder)
     if not folder.exists() and not folder.is_symlink():
+        return
+    if skip and folder.is_dir() and not folder.is_symlink() and any(folder.iterdir()) and not own_entries(folder, skip):
         return
     if folder.is_symlink() or not folder.is_dir() or any(folder.iterdir()):
         raise Stop(f'{folder} is in the way: it is not empty. Nothing was changed.')
@@ -1353,8 +1430,8 @@ def move(job):
         )
     staging = root_of(job.config, to) / NEW_COPY.format(kind=kind, id=job.id)
     new = paths(job.config, kind, to, staging)
-    for folder in paths(job.config, kind, to):
-        if folder.exists() and not os.path.ismount(folder) and any(folder.iterdir()):
+    for folder, skip in zip(paths(job.config, kind, to), kind_skips(kind)):
+        if folder.exists() and not os.path.ismount(folder) and own_entries(folder, skip):
             raise Stop(f'{folder} holds files already. Nothing was changed.')
     job.journal('copy', False, staging=str(staging), here=here, to=to, before=steps_working(job.config))
     switch_data(job, kind, here, to, paths(job.config, kind, here), new, size)
@@ -1378,12 +1455,14 @@ def copy_all(job, sources, targets_, size, final):
     import migrate
 
     job.progress('last_copy' if final else 'copy', bytes_total=size)
-    for source, target in zip(sources, targets_):
+    for source, target, skip in zip(sources, targets_, kind_skips(job.request['kind'])):
         need(job, *job_places(job))
         if not source.exists():
             continue
         target.mkdir(parents=True, exist_ok=True)
-        migrate.copy(source, target, final=final, out=job.out, again=not final and any(target.iterdir()))
+        migrate.copy(
+            source, target, final=final, out=job.out, again=not final and any(target.iterdir()), **copy_skip(skip)
+        )
 
 
 def switch_data(job, kind, here, to, sources, staged, size):
@@ -1402,8 +1481,8 @@ def switch_data(job, kind, here, to, sources, staged, size):
         # there before it finishes (T1-14).
         job.journal('compare', False, copied=[file_count(folder) for folder in staged])
         job.progress('compare')
-        for source, target in zip(sources, staged):
-            if source.exists() and migrate.differences(source, target):
+        for source, target, skip in zip(sources, staged, kind_skips(kind)):
+            if source.exists() and migrate.differences(source, target, **copy_skip(skip)):
                 raise Stop(
                     f'The copy of your {KIND_WORDS[kind]} is not the same as the original. Nothing was changed; '
                     'the apps are running as before.',
@@ -1426,12 +1505,12 @@ def put_in_place(job, kind, here, to, staged):
     need(job, *job_places(job))
     if kind == 'backups' and here != 'media':
         unbind_backups(job.config)
-    for target in paths(job.config, kind, to):
-        gone_or_empty(target)
-    for copy_, target in zip(staged, paths(job.config, kind, to)):
+    for target, skip in zip(paths(job.config, kind, to), kind_skips(kind)):
+        gone_or_empty(target, skip)
+    for copy_, target, skip in zip(staged, paths(job.config, kind, to), kind_skips(kind)):
         if copy_.exists():
             parents_like(target, root_of(job.config, here if here in job_places(job) else to), root_of(job.config, to))
-            os.rename(copy_, target)
+            move_folder(copy_, target, skip)
     # The copy and its new names on the disk before the settings say them (T1-14).
     sync_drives(root_of(job.config, to), root_of(job.config, here))
     was = (job.config.get('locations') or {}).get(kind)
@@ -1500,10 +1579,10 @@ def retire_old(job, kind, here):
 
 def retire_folders(config, kind, here, id_):
     old = root_of(config, here) / OLD_NAME.format(kind=kind, id=id_)
-    for folder, rel in zip(paths(config, kind, here), kind_folders(kind)):
-        if folder.exists() and not os.path.ismount(folder):
+    for folder, rel, skip in zip(paths(config, kind, here), kind_folders(kind), kind_skips(kind)):
+        if folder.exists() and not os.path.ismount(folder) and (not skip or own_entries(folder, skip)):
             (old / rel).parent.mkdir(parents=True, exist_ok=True)
-            os.rename(folder, old / rel)
+            move_folder(folder, old / rel, skip)
 
 
 def job_places(job):
@@ -1826,10 +1905,10 @@ def unswitch(job, kind, here, stopped, why):
     else:
         # Undone at the start already, before Docker (resume): only what an app wrote in a
         # new folder since (one its record still named) is added, nothing deleted.
-        for old, new in zip(paths(job.config, kind, here), paths(job.config, kind, to)):
-            if new.is_dir() and not os.path.ismount(new) and any(new.iterdir()):
+        for old, new, skip in zip(paths(job.config, kind, here), paths(job.config, kind, to), kind_skips(kind)):
+            if new.is_dir() and not os.path.ismount(new) and own_entries(new, skip):
                 old.mkdir(parents=True, exist_ok=True)
-                migrate.copy(new, old, out=job.out)
+                migrate.copy(new, old, out=job.out, **copy_skip(skip))
     also = ''
     try:
         setup_again(job)
@@ -1861,10 +1940,10 @@ def unswitch_files(job, kind, here):
         apply_change(forward, [['locations', kind, to]])
         unbind_backups(forward)
     unretire(job, kind, here)
-    for old, new in zip(paths(job.config, kind, here), paths(job.config, kind, to)):
+    for old, new, skip in zip(paths(job.config, kind, here), paths(job.config, kind, to), kind_skips(kind)):
         if not away(job.config, to) and new.is_dir() and not os.path.ismount(new):
             old.mkdir(parents=True, exist_ok=True)
-            migrate.copy(new, old, final=True, out=job.out)
+            migrate.copy(new, old, final=True, out=job.out, **copy_skip(skip))
     sync_drives(root_of(job.config, here))
     apply_change(job.config, job.undo()['change'])
     job.save_settings()
@@ -1878,10 +1957,11 @@ def unretire(job, kind, here):
     if away(job.config, here):
         return
     old = root_of(job.config, here) / OLD_NAME.format(kind=kind, id=job.id)
-    for folder, rel in zip(paths(job.config, kind, here), kind_folders(kind)):
-        if not folder.exists() and (old / rel).exists():
+    for folder, rel, skip in zip(paths(job.config, kind, here), kind_folders(kind), kind_skips(kind)):
+        free = not own_entries(folder, skip) if skip else not folder.exists()
+        if free and (old / rel).exists():
             folder.parent.mkdir(parents=True, exist_ok=True)
-            os.rename(old / rel, folder)
+            move_folder(old / rel, folder, skip)
     if old.is_dir():
         for left in sorted((p for p in old.rglob('*') if p.is_dir()), key=lambda p: len(p.parts), reverse=True):
             if not any(left.iterdir()):
@@ -1901,10 +1981,13 @@ def undo_move(job):
     # nekoserver-new- folder, which no app uses (T1-18).
     there = not (to and away(job.config, to))
     if to and switching and there:
-        for copy_, target in zip(paths(job.config, kind, to, staging), paths(job.config, kind, to)):
-            if target.exists() and not os.path.ismount(target) and not copy_.exists():
+        for copy_, target, skip in zip(
+            paths(job.config, kind, to, staging), paths(job.config, kind, to), kind_skips(kind)
+        ):
+            ours = own_entries(target, skip) if skip else not copy_.exists()
+            if target.exists() and not os.path.ismount(target) and ours:
                 copy_.parent.mkdir(parents=True, exist_ok=True)
-                os.rename(target, copy_)
+                move_folder(target, copy_, skip)
     if kind == 'backups' and here not in (None, 'media') and switching:
         rebind_backups(job.config, job.out)
     if there and job.action == 'move' and staging.name.startswith('nekoserver-new-') and staging.is_dir():
@@ -2141,12 +2224,31 @@ def give_up(job, stuck):
         elif cut.action == 'delete_old':
             wait_for(cut.state, delete_waits(cut.config, undo))
             words = 'The job was given up. The old copy is deleted when its drive is back.'
+        elif cut.action == 'use' and undo.get('drive'):
+            words = give_up_drive(cut, undo['drive'])
         else:
             cut.reapply(stuck)
             words = 'The job was given up. Run setup again (sudo bash install.sh) so every app is as the settings say.'
         cut.result('failed', words)
         cut.done()
     return 1
+
+
+def give_up_drive(job, drive):
+    """An added drive whose setup never worked, given up (T1-20): out of the settings and
+    the record, its own fstab line taken out and unmounted; the disk is left as it is."""
+    if any(place_of(job.config, kind) == drive for kind in KINDS):
+        job.reapply(read_state(JOURNAL, job.state))
+        return f'The job was given up. {place_words(drive)} holds your data now, so it stays in the settings.'
+    (job.config.get('storage') or {}).pop(drive, None)
+    job.save_settings()
+    drop_fstab_line(extra_mount_root() / drive)
+    if os.path.ismount(extra_mount_root() / drive):
+        run(['umount', str(extra_mount_root() / drive)])
+    return (
+        f'The job was given up: {place_words(drive)} was not added. Its disk is left as it is; '
+        'add it again from the Drives page.'
+    )
 
 
 def stopped_state(saved):
@@ -2360,10 +2462,11 @@ def forward_again(job, saved):
     kept = staging.with_name(OLD_NAME.format(kind=kind, id=job.request.get('copy', '')))
     if job.action == 'back' and not staging.is_dir() and kept.is_dir():
         os.rename(kept, staging)
-    for copy_, target in zip(paths(job.config, kind, to, staging), paths(job.config, kind, to)):
-        if copy_.exists() and not target.exists():
+    for copy_, target, skip in zip(paths(job.config, kind, to, staging), paths(job.config, kind, to), kind_skips(kind)):
+        free = not own_entries(target, skip) if skip else not target.exists()
+        if copy_.exists() and free:
             target.parent.mkdir(parents=True, exist_ok=True)
-            os.rename(copy_, target)
+            move_folder(copy_, target, skip)
     forward = [['locations', kind, None if kind == 'backups' and to == 'media' else to]]
     job.journal('start', True, change=forward, files_back=False)
     job.reapply(read_state(JOURNAL, job.state))
@@ -2419,9 +2522,10 @@ def finish_cut_move(job, saved):
         out=job.out, note=lambda units: job.journal('start', True, stopped=units), own=left_alone()
     )
     if not away(job.config, here):
-        for old, new in zip(paths(job.config, kind, here), paths(job.config, kind, saved['undo']['to'])):
+        news = paths(job.config, kind, saved['undo']['to'])
+        for old, new, skip in zip(paths(job.config, kind, here), news, kind_skips(kind)):
             if old.exists() and not os.path.ismount(old) and new.exists():
-                migrate.copy(old, new, final=True, out=job.out)
+                migrate.copy(old, new, final=True, out=job.out, **copy_skip(skip))
     finish_move(job, kind, here, stopped)
 
 

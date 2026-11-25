@@ -891,6 +891,8 @@ fn control(
             "data-move-back" => "app_data_move_back",
             "data-delete-old" => "app_data_delete_old",
             "mirror-add" => "app_mirror_add",
+            "data-retry" => "app_data_retry",
+            "data-give-up" => "app_data_give_up",
             "cards-list" => "cards_list",
             "cards-enrol" => "cards_enrol",
             "cards-write" => "cards_write",
@@ -1908,6 +1910,8 @@ mod tests {
             ("data-move-back", "app_data_move_back"),
             ("data-delete-old", "app_data_delete_old"),
             ("mirror-add", "app_mirror_add"),
+            ("data-retry", "app_data_retry"),
+            ("data-give-up", "app_data_give_up"),
         ] {
             let reply = post(
                 &format!("/api/control/{path}"),

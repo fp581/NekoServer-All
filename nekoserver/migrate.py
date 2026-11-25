@@ -297,14 +297,22 @@ def mount_staging(uuid, fstype, staging=STAGING):
     return staging
 
 
-def copy(source, target, final=False, out=print, again=False):
+def copy(source, target, final=False, out=print, again=False, skip=()):
     """One pass of the copy; the last one (`final`, with the apps stopped) also removes
     from the new drive what was deleted on the old one meanwhile. `again`: the new drive
     holds an earlier attempt's copy, whose files are compared by checksum, not by size
     and time: a file the comparison found different (a bad cable, say) keeps its size and
     time, so it was never copied again and every later attempt stopped on it (seen in
-    0.51.1)."""
-    argv = [*RSYNC, *(['--delete'] if final else []), *(['--checksum'] if again else []), f'{source}/', f'{target}/']
+    0.51.1). `skip`: names at the top of `source` that are another kind's folders (a Drives
+    job, T1-20): neither copied nor deleted at `target`."""
+    argv = [
+        *RSYNC,
+        *(['--delete'] if final else []),
+        *(['--checksum'] if again else []),
+        *excluded(skip),
+        f'{source}/',
+        f'{target}/',
+    ]
     if final:
         out('Copying what changed (the apps are stopped)...')
     elif again:
@@ -317,10 +325,25 @@ def copy(source, target, final=False, out=print, again=False):
         raise RuntimeError(f'The copy stopped (rsync exit code {done.returncode}); the old drive is unchanged')
 
 
-def differences(source, target):
+def excluded(skip):
+    """rsync's words for names at the top of the copy left out (and kept at the target)."""
+    return [f'--exclude=/{name}' for name in skip]
+
+
+def differences(source, target, skip=()):
     """Every file compared by checksum: what differs (empty when the copy is exact)."""
     shown = run(
-        [*RSYNC, '--delete', '--checksum', '--dry-run', '--itemize-changes', f'{source}/', f'{target}/'], check=False
+        [
+            *RSYNC,
+            '--delete',
+            '--checksum',
+            '--dry-run',
+            '--itemize-changes',
+            *excluded(skip),
+            f'{source}/',
+            f'{target}/',
+        ],
+        check=False,
     )
     if shown.returncode != 0:
         return [f'the comparison stopped (rsync exit code {shown.returncode})']

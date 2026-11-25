@@ -38,7 +38,8 @@ fn listed(key: &str) -> Vec<&'static str> {
 const ON_ITS_WAY: Duration = Duration::from_secs(60);
 const NOT_STARTED: &str = "The change could not be started, so nothing was changed. Try again; if it keeps failing, restart the server.";
 const STOPPED: &str = "The change stopped before it had finished, and nothing more is changed. Press Look again to see your drives as they are now.";
-const UNFINISHED: &str = "A change to your drives did not finish (the server stopped during it). Restart the server: the change is then finished, or put back as it was, before anything else.";
+const UNFINISHED: &str = "A change to your drives did not finish (the server stopped during it, or a drive it needs is away). Restart the server, or use Try again or Give it up on this page: the change is finished, or put back as it was, before anything else.";
+const NOTHING_WAITS: &str = "No change is waiting to be finished.";
 const ASK_DISK: &str = "Choose the drive again from the list (press Look again).";
 
 /// The page's ops (serve.rs names them) and the job each one starts.
@@ -51,6 +52,9 @@ fn job_of(op: &str) -> Option<&'static str> {
         "app_data_move_back" => "back",
         "app_data_delete_old" => "delete_old",
         "app_mirror_add" => "mirror_add",
+        // A change that could not be finished: tried again, or given up (T1-20).
+        "app_data_retry" => "retry",
+        "app_data_give_up" => "give_up",
         _ => return None,
     })
 }
@@ -127,7 +131,7 @@ pub fn checked(op: &str, request: &Value) -> std::result::Result<Value, &'static
         Ok(())
     };
     match job {
-        "look" => {}
+        "look" | "retry" | "give_up" => {}
         "use" => {
             disk(&mut asked)?;
             let how = request["how"]
@@ -307,8 +311,11 @@ impl Storage {
             .one
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if self.unfinished() {
-            return refuse("E47", UNFINISHED);
+        // "Try again" and "Give it up" are for the unfinished change only; every other job
+        // waits for it (T1-20: never a lock for good).
+        let way_on = matches!(asked["job"].as_str(), Some("retry" | "give_up"));
+        if self.unfinished() != way_on {
+            return refuse("E47", if way_on { NOTHING_WAITS } else { UNFINISHED });
         }
         if self.running() || self.waiting() {
             return refuse("E47", fact("busy"));
@@ -607,7 +614,15 @@ mod tests {
             .unwrap()
             .contains("Restart the server"));
         assert!(s.job()["unfinished"] == true);
+        // T1-20: "Try again" and "Give it up" are the way on past it, never a lock for good.
+        assert_eq!(checked("app_data_retry", &json!({"x": 1})).unwrap(), json!({"job": "retry"}));
+        assert_eq!(checked("app_data_give_up", &json!({})).unwrap(), json!({"job": "give_up"}));
+        assert_eq!(s.start("app_data_retry", &json!({}))["ok"], true);
+        fs::remove_file(root.join("run/request.json")).unwrap();
+        assert_eq!(s.start("app_data_give_up", &json!({}))["ok"], true);
+        fs::remove_file(root.join("run/request.json")).unwrap();
         fs::remove_file(root.join("state/journal.json")).unwrap();
+        assert_eq!(s.start("app_data_retry", &json!({}))["error"], "E47", "nothing to try again");
         assert_eq!(s.start("app_storage_look", &json!({}))["ok"], true);
         let _ = fs::remove_dir_all(&root);
     }

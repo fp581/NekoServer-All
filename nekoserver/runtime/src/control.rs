@@ -1038,7 +1038,9 @@ fn app_control(service: &Arc<Service>, op: &str, request: &Value) -> Value {
         | "app_data_move"
         | "app_data_move_back"
         | "app_data_delete_old"
-        | "app_mirror_add" => match &service.config {
+        | "app_mirror_add"
+        | "app_data_retry"
+        | "app_data_give_up" => match &service.config {
             None => refuse("E42", "App controls are switched off on this server"),
             Some(config) => storage_request(service, config, op, request),
         },

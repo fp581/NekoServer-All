@@ -129,6 +129,22 @@ class DrivesPageTests(unittest.TestCase):
         source = (ROOT / 'dashboard/app.js').read_text()
         self.assertIn('beside_ok: true', source)
 
+    def test_a_change_that_could_not_be_finished_offers_try_again_and_give_it_up(self):
+        said = page(
+            ('stuckActions', {'working': False, 'unfinished': True, 'result': {'state': 'failed'}}),
+            ('stuckActions', {'working': True, 'unfinished': True}),
+            ('stuckActions', {'working': False, 'unfinished': False}),
+            (
+                'driveOutcome',
+                {'working': False, 'unfinished': True, 'result': {'state': 'failed', 'message': 'Setup stopped.'}},
+            ),
+        )
+        self.assertEqual(said[:3], [True, False, False])
+        self.assertEqual(said[3], ['fail', 'Not finished', 'Setup stopped.'])
+        source = (ROOT / 'dashboard/app.js').read_text()
+        self.assertIn("'data-retry'", source)
+        self.assertIn("'data-give-up'", source)
+
     def test_the_page_is_in_the_menu_and_needs_the_control_service(self):
         html = (ROOT / 'dashboard/index.html').read_text(encoding='utf-8')
         nav = re.findall(r'data-route="([a-z]+)"', html)

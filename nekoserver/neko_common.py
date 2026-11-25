@@ -1296,9 +1296,15 @@ def places_of(config):
     }
 
 
-def write_places(config, record=None):
-    """The record written (atomic, fsynced) from these settings."""
-    atomic_json(record or PLACES_RECORD, places_of(config))
+def write_places(config, record=None, keep_drives=False):
+    """The record written (atomic, fsynced) from these settings. `keep_drives`: an Extra
+    drive the record has and these settings lack is kept (setup saving a settings file
+    that never had it; T1-20: only a Drives job adds or gives up a drive)."""
+    places = places_of(config)
+    if keep_drives:
+        saved = read_places(record) or {'storage': {}}
+        places['storage'] = {**saved['storage'], **places['storage']}
+    atomic_json(record or PLACES_RECORD, places)
 
 
 def read_places(record=None):
@@ -1341,9 +1347,23 @@ def current_places(config, record=None):
     line = (
         "This server's data was moved from the dashboard; using its current places"
         + (': ' + ', '.join(said) if said else ': everything on the apps and media drives')
+        + drives_said(config, saved)
         + f' (from {record}).'
     )
     return new, line
+
+
+def drives_said(config, saved):
+    """The Extra drives the record names, said when the settings file has others (T1-20:
+    setup takes a drive the file lacks from the record, and says so)."""
+    names = sorted(saved['storage'])
+    if set(names) == set(extra_drives(config)):
+        return ''
+    if not names:
+        return '; no Extra drives'
+    if len(names) == 1:
+        return f'; Extra drive {names[0]}'
+    return '; Extra drives ' + ', '.join(names[:-1]) + ' and ' + names[-1]
 
 
 def take_places(config, paths=(), out=print, record=None):

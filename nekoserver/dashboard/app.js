@@ -6342,6 +6342,9 @@ function driveOutcome(job) {
   if (j.working) {
     return ['starting', 'Working on it…', text(j.step_words)];
   }
+  if (j.unfinished && r.state === 'failed') {
+    return ['fail', 'Not finished', text(r.message)];
+  }
   if (j.unfinished) {
     return [
       'warning',
@@ -6884,6 +6887,30 @@ function mirrorCard(a, look, busy) {
   }
   return card;
 }
+/* A change that could not be finished: "Try again" and "Give it up" (T1-20). */
+function stuckActions(job) {
+  const j = object(job);
+  return j.unfinished === true && j.working !== true;
+}
+function stuckButtons() {
+  const actions = el('div', 'update-actions');
+  actions.append(
+    button('Try again', () => void drivesChange('data-retry', {}, 'Trying the change again…')),
+    button(
+      'Give it up',
+      () =>
+        confirmDialog(
+          'DRIVES',
+          'Give up this change?',
+          'What is done stays, and what is not is said. Work that needs a drive that is away is done once it is back.',
+          'Give it up',
+          () => void drivesChange('data-give-up', {}, 'Giving up the change…')
+        ),
+      'button small danger'
+    )
+  );
+  return actions;
+}
 function drivesOutcomeBox(job) {
   const said = driveOutcome(job);
   if (!said) {
@@ -6902,6 +6929,9 @@ function drivesOutcomeBox(job) {
     box.append(hint('You can close this page: the change goes on, and the page shows how it ends.'));
   } else if (r.advice && level !== 'pass') {
     box.append(el('h4', '', 'What to do'), longText('', text(r.advice)));
+  }
+  if (stuckActions(job)) {
+    box.append(stuckButtons());
   }
   if (!job.working && numeric(r.finished_at) && r.finished_at > 0) {
     box.append(hint('Ended ' + ago(r.finished_at) + '.'));

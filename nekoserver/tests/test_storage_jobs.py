@@ -36,8 +36,14 @@ def saved_journal(root):
     return storage_jobs.read_state('journal.json', Path(root) / 'state')
 
 
-def copy(source, target, final=False, out=print, again=False):
-    shutil.copytree(source, target, dirs_exist_ok=True)
+def copy(source, target, final=False, out=print, again=False, skip=()):
+    top = Path(source)
+    shutil.copytree(
+        source,
+        target,
+        dirs_exist_ok=True,
+        ignore=lambda folder, names: [n for n in names if Path(folder) == top and n in skip],
+    )
 
 
 class Jobs(unittest.TestCase):

@@ -44,9 +44,9 @@ class Marked(Jobs):
             self.marks.append(('result', state))
             return result(job, state, message, advice, power_cut)
 
-        def copied(source, target, final=False, out=print, again=False):
+        def copied(source, target, final=False, out=print, again=False, skip=()):
             self.copies.append((str(Path(source).relative_to(self.root)), final, again))
-            copy(source, target, final, out, again)
+            copy(source, target, final, out, again, skip)
 
         def checked(config, before):
             self.checks.append(before)

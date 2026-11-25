@@ -89,7 +89,7 @@ class Context:
         # Once the Drives page has recorded the places, a change setup makes to them is
         # recorded too; a server that never used it gets no record (T1-17).
         if read_places() is not None:
-            write_places(self.config)
+            write_places(self.config, keep_drives=True)
         self.saved = copy.deepcopy(self.config)
 
 

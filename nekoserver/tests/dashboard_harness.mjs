@@ -62,7 +62,8 @@ const CALLS = new Set([
   'confirmMatches',
   'moveWords',
   'kindPlace',
-  'besideTick'
+  'besideTick',
+  'stuckActions'
 ]);
 /* Calls answered from another function's result, with more of it; the ask* and media*
    ones run a piece of the page on a page that keeps what is put on it (ASK_PAGE below). */
