@@ -2262,13 +2262,11 @@ def give_up(job, stuck):
 def mirror_given_up(undo):
     """The words for a mirror's rebuild let go (T5, review of 6940d3f: its pool may never
     come back, and setup does not rebuild a mirror): the recovery page's row for it."""
-    row = 'A drive of a Btrfs pool failed'
+    said = 'The job was given up: the new drive was not made part of the mirror, which goes on with the drives it has.'
+    # Each row named whole, so the docs test finds it in RECOVERY.md.
     if str(undo.get('array') or '').startswith('md-'):
-        row = 'A drive of a RAID array failed'
-    return (
-        'The job was given up: the new drive was not made part of the mirror, which goes on '
-        f'with the drives it has. To replace the failed drive, see RECOVERY.md, "{row}".'
-    )
+        return said + ' To replace the failed drive, see RECOVERY.md, "A drive of a RAID array failed".'
+    return said + ' To replace the failed drive, see RECOVERY.md, "A drive of a Btrfs pool failed".'
 
 
 def give_up_drive(job, drive):
