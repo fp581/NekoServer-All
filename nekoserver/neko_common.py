@@ -1277,12 +1277,13 @@ def extra_drives(config):
 # and the media drive are not in it: a new SSD is the settings file's own.
 PLACES_RECORD = Path('/etc/nekoserver-os/places.json')
 PLACE_NAMES = {'ssd': 'the apps drive', 'media': 'the media and backups drive'}
+NEXTCLOUD_FILES = 'Nextcloud files'
 KIND_NAMES = {
     'backups': 'backups',
     'photos': 'photos',
     'movies': 'films and shows',
     'music': 'music',
-    'cloud': 'Nextcloud files',
+    'cloud': NEXTCLOUD_FILES,
 }
 
 
@@ -2215,9 +2216,9 @@ def drive_holds(config, key):
             ['your apps'] + ['photos'] * media_group(config, 'photos') + ['music'] * media_group(config, 'music')
         )
     if key == 'media_hdd':
-        kept = ['movies', 'shows'] * media_group(config, 'movies') + ['Nextcloud files'] * cloud
+        kept = ['movies', 'shows'] * media_group(config, 'movies') + [NEXTCLOUD_FILES] * cloud
         return 'your ' + listed([*kept, 'the backups']) if kept else 'the backups'
-    copied = ['photos'] * immich_wanted(config) + ['Nextcloud files'] * cloud
+    copied = ['photos'] * immich_wanted(config) + [NEXTCLOUD_FILES] * cloud
     return 'the weekly copy of your ' + (listed(copied) or 'files')
 
 

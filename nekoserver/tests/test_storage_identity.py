@@ -128,6 +128,51 @@ class FolderMountTests(unittest.TestCase):
         context.persist_config.assert_not_called()
 
 
+class DrivesFolderTests(unittest.TestCase):
+    """T1-15 (1.0.1): /mnt/nekoserver-drives, the folder of the Extra drives' mount points,
+    was made 0700 by setup run inside a Drives job (the unit's UMask=0077), so neither the
+    apps' account nor Samba, NFS or the person's login could reach a folder on an Extra drive.
+    NekoServer's own folder, like /mnt: setup keeps it root's, 0755, and says so when it
+    opens a closed one."""
+
+    def specs(self, top, *names):
+        return [(name, f'{name}-uuid-0001', 'ext4', str(top / name), None) for name in names]
+
+    def test_a_closed_drives_folder_is_opened_once_and_said(self):
+        with tempfile.TemporaryDirectory() as d:
+            top = Path(d) / 'drives'
+            top.mkdir(mode=0o700)
+            top.chmod(0o700)
+            if os.geteuid() == 0:
+                os.chown(top, 1000, 1000)
+            said = []
+            storage.drives_folder_open(self.specs(top, 'd4'), said.append, top)
+            seen = top.stat()
+            self.assertEqual(seen.st_mode & 0o7777, 0o755)
+            if os.geteuid() == 0:
+                self.assertEqual((seen.st_uid, seen.st_gid), (0, 0))
+            self.assertEqual(len(said), 1)
+            self.assertIn(f'{top} was closed (0700)', said[0])
+            storage.drives_folder_open(self.specs(top, 'd4'), said.append, top)
+            self.assertEqual(len(said), 1, 'said once: the next run finds it open')
+
+    def test_a_new_drives_folder_is_made_open_and_none_is_made_without_an_extra_drive(self):
+        with tempfile.TemporaryDirectory() as d:
+            top = Path(d) / 'drives'
+            said = []
+            storage.drives_folder_open(
+                [('data_ssd', 'aaaa-1111', 'ext4', str(Path(d) / 'ssd'), None)], said.append, top
+            )
+            self.assertFalse(top.exists(), 'nothing changes for a server without one')
+            old = os.umask(0o077)  # as inside the storage unit
+            try:
+                storage.drives_folder_open(self.specs(top, 'd3', 'one'), said.append, top)
+            finally:
+                os.umask(old)
+            self.assertEqual(top.stat().st_mode & 0o7777, 0o755)
+            self.assertEqual(said, [])
+
+
 def findmnt_answer(text):
     return lambda argv, **_: mock.Mock(returncode=0, stdout=text)
 

@@ -231,6 +231,15 @@ pub fn plain_path(value: &str) -> bool {
             .all(|part| !part.is_empty() && part != "." && part != "..")
 }
 
+/// A drive's name as setup gives them (neko_common.DRIVE_NAME, common::extra_drive): d3, d4 ...
+fn drive_name(name: &str) -> bool {
+    name.len() <= 16
+        && name.starts_with(|c: char| c.is_ascii_lowercase())
+        && name
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+}
+
 /// The request as media_locations.py takes it: only the fields the change needs, each
 /// one of its fixed words (shared.json) or a plain path; Err(why) in the person's words.
 pub fn checked(request: &Value) -> std::result::Result<Value, &'static str> {
@@ -281,6 +290,26 @@ pub fn checked(request: &Value) -> std::result::Result<Value, &'static str> {
                 .ok_or("Which folder?")?;
             asked["slot"] = json!(slot);
         }
+        // "A folder on this Extra drive" (1.0.1, part C): the drive by its name (that it
+        // is one of this server's Extra drives, connected, is media_locations.py's to say).
+        "make" => {
+            let drive = request["drive"]
+                .as_str()
+                .filter(|d| drive_name(d))
+                .ok_or("Which Extra drive?")?;
+            let downloads = request["downloads"]
+                .as_bool()
+                .ok_or("Should new downloads go there?")?;
+            asked["drive"] = json!(drive);
+            asked["downloads"] = json!(downloads);
+            let backup = &request["backup"];
+            if !backup.is_null() && !backup.is_boolean() {
+                return Err("Should the music backup copy it too?");
+            }
+            if backup.is_boolean() && kind == "music" {
+                asked["backup"] = backup.clone();
+            }
+        }
         _ => {
             let target = request["target"]
                 .as_str()
@@ -292,7 +321,7 @@ pub fn checked(request: &Value) -> std::result::Result<Value, &'static str> {
     // The folder the page showed under that slot: a slot is given again to a folder added
     // after one was taken away, so a page left open on another device would change the
     // new one (media_locations.shown_there refuses that).
-    if change != "add" && !request["path"].is_null() {
+    if ["remove", "target"].contains(&change.as_str()) && !request["path"].is_null() {
         let shown = request["path"]
             .as_str()
             .filter(|p| plain_path(p))
@@ -642,6 +671,35 @@ mod tests {
         );
         // A path with spaces and accents, as phones and PCs name folders, is fine.
         assert!(plain_path("/mnt/nas/Films de Zoé (2024)"));
+    }
+
+    #[test]
+    fn a_folder_made_on_an_extra_drive_names_the_drive_only() {
+        // 1.0.1, part C: no path goes on (media_locations.py makes <drive>/media/<kind>).
+        let make = json!({"change": "make", "kind": "music", "drive": "d4", "downloads": false,
+            "backup": true, "path": "/etc", "how": "copy"});
+        assert_eq!(
+            checked(&make).unwrap(),
+            json!({"change": "make", "kind": "music", "drive": "d4", "downloads": false, "backup": true})
+        );
+        let mut films = make.clone();
+        films["kind"] = json!("movies");
+        assert!(checked(&films).unwrap().get("backup").is_none());
+        for (key, bad) in [
+            ("drive", json!("../d4")),
+            ("drive", json!("D4")),
+            ("drive", json!("4d")),
+            ("drive", json!("")),
+            ("drive", json!("d12345678901234567")),
+            ("drive", json!(null)),
+            ("downloads", json!("yes")),
+            ("downloads", json!(null)),
+            ("backup", json!("no")),
+        ] {
+            let mut wrong = make.clone();
+            wrong[key] = bad.clone();
+            assert!(checked(&wrong).is_err(), "{key} = {bad}");
+        }
     }
 
     #[test]
