@@ -84,12 +84,14 @@ class Context:
             atomic_json(path, self.config if now is None else merged(self.saved, self.config, now))
             if owner is not None and os.geteuid() == 0:
                 os.chown(path, *owner, follow_symlinks=False)
-        from neko_common import read_places, write_places
+        from neko_common import extra_drives, read_places, write_places
 
         # Once the Drives page has recorded the places, a change setup makes to them is
         # recorded too; a server that never used it gets no record (T1-17).
         if read_places() is not None:
-            write_places(self.config, keep_drives=True)
+            # A drive this run had and took out (given up) leaves the record too.
+            gone = set(extra_drives(self.saved)) - set(extra_drives(self.config))
+            write_places(self.config, keep_drives=True, given_up=gone)
         self.saved = copy.deepcopy(self.config)
 
 

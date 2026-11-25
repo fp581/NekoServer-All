@@ -1296,14 +1296,16 @@ def places_of(config):
     }
 
 
-def write_places(config, record=None, keep_drives=False):
+def write_places(config, record=None, keep_drives=False, given_up=()):
     """The record written (atomic, fsynced) from these settings. `keep_drives`: an Extra
     drive the record has and these settings lack is kept (setup saving a settings file
-    that never had it; T1-20: only a Drives job adds or gives up a drive)."""
+    that never had it; T1-20), except one this run gave up (`given_up`: setup's "Is this
+    drive permanently unavailable?" answered yes)."""
     places = places_of(config)
     if keep_drives:
         saved = read_places(record) or {'storage': {}}
-        places['storage'] = {**saved['storage'], **places['storage']}
+        kept = {name: drive for name, drive in saved['storage'].items() if name not in given_up}
+        places['storage'] = {**kept, **places['storage']}
     atomic_json(record or PLACES_RECORD, places)
 
 

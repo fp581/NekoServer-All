@@ -630,7 +630,7 @@ def move_folder(source, target, skip=()):
         target.mkdir()
         os.chmod(target, stat.S_IMODE(held.st_mode))
         if os.geteuid() == 0:
-            os.chown(target, held.st_uid, held.st_gid)
+            os.chown(target, held.st_uid, held.st_gid, follow_symlinks=False)
     for entry in own_entries(source, skip):
         if (target / entry.name).exists() or (target / entry.name).is_symlink():
             raise RuntimeError(f'{target / entry.name} is in the way: it is there already.')
