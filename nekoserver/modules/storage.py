@@ -2377,30 +2377,33 @@ DRIVES_CLOSED = (
 )
 
 
-def drives_folder_open(specs, log, top=None):
+def drives_folder_open(specs, log, top=None, like=None):
     """/mnt/nekoserver-drives: NekoServer's own folder of the Extra drives' mount points
-    (like /mnt, nothing private in it) is root's, 0755, so the apps' account, Samba, NFS
-    and the person's own login can pass to a folder on an Extra drive. Made only for a
-    server with one; one closed by a umask (setup run inside a Drives job before 1.0.1's
-    fix made it 0700: T1-15) is opened, and said. Each drive's own top stays as its
-    filesystem has it."""
+    (nothing private in it) has the mode and owner of the folder it is in, /mnt (`like`;
+    root's, 0755), so the apps' account, Samba, NFS and the person's own login can pass to
+    a folder on an Extra drive. Made only for a server with one; one closed by a umask
+    (setup run inside a Drives job before 1.0.1's fix made it 0700: T1-15) is opened, and
+    said. Each drive's own top stays as its filesystem has it. The mode is /mnt's, never
+    one written here (SonarCloud S2612)."""
     from neko_common import EXTRA_MOUNTS
 
     top = Path(top or EXTRA_MOUNTS)
     if not any(Path(spec[3]).parent == top for spec in specs):
         return
+    reference = Path(like or top.parent).stat()
+    wanted, owner = stat.S_IMODE(reference.st_mode), (reference.st_uid, reference.st_gid)
     made = not top.exists()
     if made:
-        top.mkdir(mode=0o755)
+        top.mkdir()
     seen = top.lstat()
     if not stat.S_ISDIR(seen.st_mode):
         raise RuntimeError(f'{top} must be a folder (NekoServer mounts its Extra drives in it)')
-    owner = (seen.st_uid, seen.st_gid) if os.geteuid() == 0 else (0, 0)
-    if stat.S_IMODE(seen.st_mode) == 0o755 and owner == (0, 0):
+    root = os.geteuid() == 0
+    if stat.S_IMODE(seen.st_mode) == wanted and (not root or (seen.st_uid, seen.st_gid) == owner):
         return
-    if os.geteuid() == 0:
-        os.chown(top, 0, 0, follow_symlinks=False)
-    os.chmod(top, 0o755)
+    if root:
+        os.chown(top, *owner, follow_symlinks=False)
+    os.chmod(top, wanted)
     if not made:
         log(DRIVES_CLOSED.format(top=top, mode=f'{stat.S_IMODE(seen.st_mode):04o}'))
 
