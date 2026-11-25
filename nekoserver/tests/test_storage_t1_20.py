@@ -165,12 +165,21 @@ class MirrorGiveUpTests(Jobs):
         self.assertIn('RECOVERY.md', said)
         self.assertIn('A drive of a Btrfs pool failed', said)
         self.assertNotIn('Run setup again', said)
+        # Coordinator: what it leaves and what to do next. The replace was started (the
+        # journal is committed only then), so it goes on in the kernel by itself.
+        self.assertNotIn('not made part', said)
+        self.assertIn('goes on by itself', said)
+        self.assertIn('sudo btrfs replace status', said)
+        self.assertIn('sudo btrfs filesystem show', said)
 
     def test_an_md_rebuild_given_up_points_to_the_raid_row(self):
         mirror_journal(self.root, 'md-md0')
         self.assertEqual(self.run_job('give_up'), 1)
         self.assertIsNone(saved_journal(self.root))
-        self.assertIn('A drive of a RAID array failed', last_result(self.root)['message'])
+        said = last_result(self.root)['message']
+        self.assertIn('A drive of a RAID array failed', said)
+        self.assertIn('cat /proc/mdstat', said)
+        self.assertNotIn('not made part', said)
 
 
 if __name__ == '__main__':

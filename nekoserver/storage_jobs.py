@@ -2294,12 +2294,23 @@ def give_up(job, stuck):
 
 def mirror_given_up(undo):
     """The words for a mirror's rebuild let go (T5, review of 6940d3f: its pool may never
-    come back, and setup does not rebuild a mirror): the recovery page's row for it."""
-    said = 'The job was given up: the new drive was not made part of the mirror, which goes on with the drives it has.'
+    come back, and setup does not rebuild a mirror). Its journal is committed once the new
+    drive was handed to the mirror (btrfs replace start), so giving up stops NekoServer
+    following it, not the rebuild: what it leaves, how to see it, and the recovery page's
+    row for a drive still missing (coordinator, T1-22)."""
+    given = 'The job was given up: NekoServer no longer follows the rebuild of your mirror, '
     # Each row named whole, so the docs test finds it in RECOVERY.md.
     if str(undo.get('array') or '').startswith('md-'):
-        return said + ' To replace the failed drive, see RECOVERY.md, "A drive of a RAID array failed".'
-    return said + ' To replace the failed drive, see RECOVERY.md, "A drive of a Btrfs pool failed".'
+        return (
+            given + 'which goes on by itself: the new drive is in the array, and  cat /proc/mdstat  shows how far '
+            'the copy onto it is. If the array still lacks a drive when it has finished, see RECOVERY.md, '
+            '"A drive of a RAID array failed".'
+        )
+    return (
+        given + 'which goes on by itself while the pool is mounted (the new drive was erased and handed to it): '
+        'sudo btrfs replace status  with the pool\'s folder shows how far it is. If  sudo btrfs filesystem show  '
+        'still says a device of the pool is missing, see RECOVERY.md, "A drive of a Btrfs pool failed".'
+    )
 
 
 def give_up_drive(job, drive):
